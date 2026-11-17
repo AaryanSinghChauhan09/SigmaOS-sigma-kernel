@@ -3,7 +3,7 @@ name = "SigmaOS-sigma-kernel"
 tier = 2
 stability = "scaffold"
 language = "rust"
-description = "sigma-kernel component"
+description = "SigmaOS sigma-kernel - modular Rust crate for the SigmaOS system"
 upstream = []
 
 [contract]
