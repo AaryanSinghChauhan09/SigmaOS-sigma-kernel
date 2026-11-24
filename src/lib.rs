@@ -1,131 +1,33 @@
-//! SigmaOS-sigma_kernel — sigma_kernel component for SigmaOS
+//! SigmaOS kernel — no_std operating system core.
+//!
+//! Modules: boot info parsing (Multiboot2/Limine), physical memory
+//! management, VFS with cpio initramfs, 16550 UART, VirtIO-MMIO queues,
+//! syscall ABI, and linear framebuffer output.
+
+#![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
-use thiserror::Error;
+extern crate alloc;
 
-/// Error types for this component.
-#[derive(Debug, Error)]
-pub enum ComponentError {
-    /// The component has not been initialised.
-    #[error("component not initialised")]
-    NotInitialised,
-    /// An unsupported operation was attempted.
-    #[error("unsupported operation: {0}")]
-    Unsupported(&'static str),
-}
+pub mod boot;
+pub mod error;
+pub mod fb;
+pub mod mm;
+pub mod syscall;
+pub mod uart;
+pub mod virtio;
+pub mod vfs;
 
-/// Convenience result type.
-pub type ComponentResult<T> = Result<T, ComponentError>;
+pub use error::KernelError;
 
-/// Core component struct for sigma_kernel.
-#[derive(Debug, Default, Clone)]
-pub struct Component {
-    initialised: bool,
-    name: String,
-}
+/// Kernel version reported via syscall and boot banner.
+pub const KERNEL_VERSION: &str = "0.1.0";
 
-impl Component {
-    /// Create a new, uninitialised component.
-    pub fn new() -> Self {
-        Self {
-            initialised: false,
-            name: String::from("sigma_kernel"),
-        }
-    }
+/// Higher-half base where the kernel is mapped.
+pub const HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
 
-    /// Initialise the component.
-    pub fn init(&mut self) -> ComponentResult<()> {
-        self.initialised = true;
-        Ok(())
-    }
-
-    /// Returns true if the component has been initialised.
-    pub fn is_ready(&self) -> bool {
-        self.initialised
-    }
-
-    /// Execute the component's primary operation.
-    pub fn run(&self) -> ComponentResult<()> {
-        if !self.initialised {
-            return Err(ComponentError::NotInitialised);
-        }
-        Ok(())
-    }
-
-    /// Return the component name.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Reset the component to uninitialised state.
-    pub fn reset(&mut self) {
-        self.initialised = false;
-    }
-}
+/// Physical load address expected by the boot protocol.
+pub const KERNEL_LOAD_ADDR: u64 = 0x100_000; // 1 MiB
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_not_ready_aaa() {
-        // Arrange + Act
-        let c = Component::new();
-        // Assert
-        assert!(!c.is_ready());
-    }
-
-    #[test]
-    fn test_init_makes_ready_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        // Act
-        c.init().unwrap();
-        // Assert
-        assert!(c.is_ready());
-    }
-
-    #[test]
-    fn test_run_before_init_fails_aaa() {
-        // Arrange
-        let c = Component::new();
-        // Act
-        let result = c.run();
-        // Assert
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_run_after_init_succeeds_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        c.init().unwrap();
-        // Act
-        let result = c.run();
-        // Assert
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_reset_clears_init_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        c.init().unwrap();
-        assert!(c.is_ready());
-        // Act
-        c.reset();
-        // Assert
-        assert!(!c.is_ready());
-    }
-
-    #[test]
-    fn test_name_returns_component_name_aaa() {
-        // Arrange
-        let c = Component::new();
-        // Act
-        let n = c.name();
-        // Assert
-        assert!(!n.is_empty());
-    }
-}
+extern crate std;

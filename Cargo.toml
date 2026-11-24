@@ -1,15 +1,17 @@
 [package]
-name = "SigmaOS-sigma-kernel"
+name = "sigmaos-sigma-kernel"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
-description = "SigmaOS sigma_kernel component"
+license = "GPL-3.0-or-later"
+description = "SigmaOS kernel — no_std core with boot info, MM, VFS, drivers"
 
 [lib]
 name = "sigma_kernel"
 path = "src/lib.rs"
 
 [dependencies]
-thiserror = "1"
 
-[dev-dependencies]
+[features]
+default = []
+# Enable std-backed tests on host.
+test-std = []
