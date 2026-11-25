@@ -100,10 +100,14 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
     ));
 
     // VGA text console + serial mirror.
-    let mut con = kernel::console::TextConsole::new(
-        arch::VgaBuf,
-        kernel::console::attr::make(kernel::console::attr::LIGHT_GREEN, kernel::console::attr::BLACK),
-    );
+    unsafe {
+        CON = Some(kernel::console::TextConsole::new(
+            arch::VgaBuf,
+            kernel::console::attr::make(kernel::console::attr::LIGHT_GREEN, kernel::console::attr::BLACK),
+        ));
+    }
+    #[allow(static_mut_refs)]
+    let con = unsafe { sys_con() };
     con.println("SigmaOS kernel — PVH boot");
     con.println(&alloc::format!(
         "mem regions: {}   modules: {}",
@@ -173,7 +177,7 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
 
     // Run /init in ring 3 if present.
     if let Some(init) = unsafe { sys_vfs() }.read("/init") {
-        run_init(init, bi, &mut con);
+        run_init(init, bi, con);
     }
 
     // PS/2 keyboard + interactive echo.
@@ -341,6 +345,15 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// Global VFS — populated at boot, shared with the syscall layer.
 static mut VFS: Option<kernel::vfs::Vfs> = None;
+
+/// Global VGA console for syscall output.
+static mut CON: Option<kernel::console::TextConsole<arch::VgaBuf>> = None;
+
+/// Borrow the console (syscall path).
+#[allow(static_mut_refs)]
+pub unsafe fn sys_con() -> &'static mut kernel::console::TextConsole<arch::VgaBuf> {
+    unsafe { CON.as_mut().unwrap() }
+}
 
 /// Borrow the mounted VFS (syscall path).
 #[allow(static_mut_refs)]

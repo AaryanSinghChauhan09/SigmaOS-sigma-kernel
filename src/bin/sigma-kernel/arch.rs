@@ -181,10 +181,13 @@ impl kernel::syscall::KernelServices for TrapSvc {
         for &b in bytes {
             if b == b'\n' {
                 log("\n");
+                // SAFETY: console global initialized at boot.
+                unsafe { crate::sys_con().newline_pub() };
             } else if (0x20..0x7f).contains(&b) {
                 let mut c = [0u8; 1];
                 c[0] = b;
                 log(core::str::from_utf8(&c).unwrap());
+                unsafe { crate::sys_con().put_byte(b) };
             }
         }
         len as i64
