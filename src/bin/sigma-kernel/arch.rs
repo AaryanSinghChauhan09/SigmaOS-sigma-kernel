@@ -195,4 +195,131 @@ impl kernel::syscall::KernelServices for TrapSvc {
     }
     fn pid(&self) -> u64 { 1 }
     fn kernel_version(&self) -> &'static str { kernel::KERNEL_VERSION }
+    fn open(&mut self, path_ptr: u64, path_len: u64, flags: u64) -> i64 {
+        self.sys_open(path_ptr, path_len, flags)
+    }
+    fn read(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
+        self.sys_read(fd, ptr, len)
+    }
+    fn close(&mut self, fd: u64) -> i64 {
+        self.sys_close(fd)
+    }
+}
+
+/* ---- fd table + file syscalls for TrapSvc ---- */
+
+const MAX_FDS: usize = 8;
+
+#[derive(Clone, Copy)]
+struct FdEnt {
+    used: bool,
+    path: [u8; 64],
+    len: u32,
+    off: u64,
+}
+
+static mut FDS: [FdEnt; MAX_FDS] = [FdEnt {
+    used: false, path: [0; 64], len: 0, off: 0,
+}; MAX_FDS];
+
+fn fd_alloc() -> Option<usize> {
+    // SAFETY: single-threaded syscall context.
+    unsafe {
+        FDS.iter().position(|f| !f.used)
+    }
+}
+
+fn fd_get(fd: u64) -> Option<&'static mut FdEnt> {
+    // SAFETY: index bounds-checked; syscall context is single-threaded.
+    unsafe {
+        let i = fd.checked_sub(3)? as usize;
+        if i < MAX_FDS && FDS[i].used { Some(&mut *core::ptr::addr_of_mut!(FDS[i])) } else { None }
+    }
+}
+
+/// Read one byte from the 16550 RX (nonblocking). None if empty.
+pub fn serial_read_byte() -> Option<u8> {
+    // LSR bit 0 = data ready
+    if inb(0x3fd) & 1 == 0 {
+        return None;
+    }
+    Some(inb(0x3f8))
+}
+
+impl TrapSvc {
+    /// open(path_ptr,path_len,flags): copy path, check VFS, alloc fd.
+    fn sys_open(&mut self, path_ptr: u64, path_len: u64, _flags: u64) -> i64 {
+        if path_len == 0 || path_len > 64 {
+            return -22; // EINVAL
+        }
+        // SAFETY: user path buffer is mapped under active CR3.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize)
+        };
+        let path = match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return -14, // EFAULT
+        };
+        let exists = unsafe { crate::sys_vfs() }.exists(path);
+        if !exists {
+            return -2; // ENOENT
+        }
+        let Some(slot) = fd_alloc() else { return -24 }; // EMFILE
+        // SAFETY: slot just allocated, single-threaded.
+        unsafe {
+            let f = &mut *core::ptr::addr_of_mut!(FDS[slot]);
+            f.used = true;
+            f.len = path_len as u32;
+            f.off = 0;
+            f.path[..path_len as usize].copy_from_slice(bytes);
+        }
+        (slot as i64) + 3
+    }
+
+    /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file at offset.
+    fn sys_read(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
+        if fd == 0 {
+            // nonblocking serial: return 1 byte or EAGAIN
+            return match serial_read_byte() {
+                Some(b) => {
+                    // SAFETY: user buf mapped.
+                    unsafe { *(ptr as *mut u8) = b };
+                    1
+                }
+                None => -11, // EAGAIN
+            };
+        }
+        let Some(f) = fd_get(fd) else { return -9 }; // EBADF
+        let path = match core::str::from_utf8(&f.path[..f.len as usize]) {
+            Ok(s) => s,
+            Err(_) => return -14,
+        };
+        let data = unsafe { crate::sys_vfs() }.read(path);
+        let Some(data) = data else { return -5 }; // EIO
+        let off = f.off as usize;
+        if off >= data.len() {
+            return 0; // EOF
+        }
+        let n = (len as usize).min(data.len() - off);
+        // SAFETY: user buf mapped; n <= remaining file bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                data[off..off + n].as_ptr(),
+                ptr as *mut u8,
+                n,
+            );
+        }
+        f.off += n as u64;
+        n as i64
+    }
+
+    fn sys_close(&mut self, fd: u64) -> i64 {
+        match fd_get(fd) {
+            Some(f) => {
+                f.used = false;
+                0
+            }
+            None => -9,
+        }
+    }
 }

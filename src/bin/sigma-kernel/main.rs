@@ -164,13 +164,15 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
                 con.println("initramfs: parse error");
             }
         }
+        // publish for the syscall layer
+        unsafe { VFS = Some(vfs) };
     } else {
         arch::log("sigma-kernel: no initramfs module\n");
         con.println("no initramfs module");
     }
 
     // Run /init in ring 3 if present.
-    if let Some(init) = vfs.read("/init") {
+    if let Some(init) = unsafe { sys_vfs() }.read("/init") {
         run_init(init, bi, &mut con);
     }
 
@@ -335,6 +337,15 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     loop {
         arch::halt();
     }
+}
+
+/// Global VFS — populated at boot, shared with the syscall layer.
+static mut VFS: Option<kernel::vfs::Vfs> = None;
+
+/// Borrow the mounted VFS (syscall path).
+#[allow(static_mut_refs)]
+pub unsafe fn sys_vfs() -> &'static kernel::vfs::Vfs {
+    unsafe { VFS.as_ref().unwrap() }
 }
 
 /* ---- ring-3 user entry ---- */

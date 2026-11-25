@@ -62,6 +62,13 @@ pub trait KernelServices {
     fn pid(&self) -> u64;
     /// Kernel version string pointer/len for KERNEL_INFO.
     fn kernel_version(&self) -> &'static str;
+
+    /// Open `path` (user ptr+len) with `flags`; returns fd or -errno.
+    fn open(&mut self, _path_ptr: u64, _path_len: u64, _flags: u64) -> i64 { ENOSYS }
+    /// Read `len` bytes into user `ptr` from `fd`; returns count/-errno.
+    fn read(&mut self, _fd: u64, _ptr: u64, _len: u64) -> i64 { ENOSYS }
+    /// Close `fd`.
+    fn close(&mut self, _fd: u64) -> i64 { ENOSYS }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -84,6 +91,9 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
             svc.write(fd, ptr, len)
         }
         nr::EXIT => svc.exit(args[0]),
+        nr::OPEN => svc.open(args[0], args[1], args[2]),
+        nr::READ => svc.read(args[0], args[1], args[2]),
+        nr::CLOSE => svc.close(args[0]),
         nr::GETPID | nr::GETTID => svc.pid() as i64,
         nr::KERNEL_INFO => {
             // return (ptr,len) packed: caller reads version via ptr
