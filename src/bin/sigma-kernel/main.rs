@@ -412,6 +412,9 @@ static mut CTX: [[u64; 19]; NPROCS] = [[0; 19]; NPROCS];
 pub struct ProcSlot {
     pub used: bool,
     pub exited: bool,
+    pub sleeping: bool,      // Skipped by sched_tick until woken
+    pub wait_pid: u64,        // Pid this proc is blocked waiting on (0 = none)
+    pub reaped: bool,         // Exit status already delivered to a waiter
     pub pid: u64,
     pub parent: i64,
     pub exit_code: u64,
@@ -420,7 +423,8 @@ pub struct ProcSlot {
 }
 
 pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
-    used: false, exited: false, pid: 0, parent: -1,
+    used: false, exited: false, sleeping: false, wait_pid: 0,
+    reaped: false, pid: 0, parent: -1,
     exit_code: 0, pml4: 0, brk: 0,
 }; NPROCS];
 static mut NEXT_PID: u64 = 1;
@@ -442,6 +446,19 @@ unsafe fn switch_to(idx: usize) {
     switch_req = 1;
 }
 
+/// Find the next runnable process (not exited, not sleeping) starting
+/// from `from` (exclusive). Returns None if no runnable process exists.
+/// (Linux `pick_next_task` analogue.)
+unsafe fn next_runnable(from: usize) -> Option<usize> {
+    for off in 1..=NPROCS {
+        let i = (from + off) % NPROCS;
+        if PROCS[i].used && !PROCS[i].exited && !PROCS[i].sleeping {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Timer-tick scheduler — called from `irq_common` on timer IRQs after
 /// the interrupted user ctx has been saved into the current proc's slot.
 /// Picks the next runnable process round-robin, swaps the per-process
@@ -455,7 +472,7 @@ pub extern "C" fn sched_tick() {
     unsafe {
         for off in 1..=NPROCS {
             let i = (CUR_PROC + off) % NPROCS;
-            if PROCS[i].used && !PROCS[i].exited {
+            if PROCS[i].used && !PROCS[i].exited && !PROCS[i].sleeping {
                 PROCS[CUR_PROC].pml4 = USER_PML4;
                 PROCS[CUR_PROC].brk = USER_BRK;
                 CUR_PROC = i;
@@ -562,7 +579,8 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
     c[cx::FL] = 0x202; // IF=1
     c[cx::CR3] = tables.cr3;
     PROCS[slot] = ProcSlot {
-        used: true, exited: false, pid,
+        used: true, exited: false, sleeping: false, wait_pid: 0,
+        reaped: false, pid,
         parent: CUR_PROC as i64, exit_code: 0,
         pml4: tables.cr3, brk: USER_BRK,
     };
@@ -570,34 +588,71 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
     pid as i64
 }
 
-/// WAIT(pid): reap a child's exit status. Cooperative scheduling
-/// means a non-exited child can't be waited on yet -> EAGAIN.
+/// WAIT(pid): reap a child's exit status. Blocks until the child exits
+/// (Linux `wait` analogue). Returns EAGAIN if no runnable process to switch to.
 unsafe fn sys_wait(pid: u64) -> i64 {
     for i in 0..NPROCS {
         if PROCS[i].used && PROCS[i].pid == pid {
-            if !PROCS[i].exited {
-                return -11; // EAGAIN
+            if PROCS[i].parent != CUR_PROC as i64 {
+                return -3; // ESRCH: not our child
             }
-            return PROCS[i].exit_code as i64;
+            if PROCS[i].exited {
+                if PROCS[i].reaped {
+                    return -10; // ECHILD: already reaped
+                }
+                PROCS[i].reaped = true;
+                return PROCS[i].exit_code as i64;
+            }
+            // Child still alive: block until it exits.
+            let cur = CUR_PROC;
+            match next_runnable(cur) {
+                Some(j) => {
+                    PROCS[cur].sleeping = true;
+                    PROCS[cur].wait_pid = pid;
+                    switch_to(j);
+                    // When we wake, EXIT writes status into ctx.rax
+                    return 0;
+                }
+                None => return -11, // EAGAIN: no runnable process
+            }
         }
     }
     -3 // ESRCH
 }
 
-/// EXIT(code): mark the process exited and switch to its parent.
-/// Init (no parent) halts the system.
+/// EXIT(code): mark the process exited, wake the waiting parent,
+/// and switch to the next runnable process. Status is delivered via
+/// ctx.rax to the waking parent (Linux `do_exit` + `wake_up` analogue).
 unsafe fn sys_exit(code: u64) -> i64 {
     let cur = CUR_PROC;
     PROCS[cur].exited = true;
     PROCS[cur].exit_code = code;
     let parent = PROCS[cur].parent;
-    if parent >= 0 {
-        switch_to(parent as usize);
-        0
-    } else {
+    if parent < 0 {
         arch::log("sigma-kernel: init exit\n");
-        loop {
-            arch::halt();
+        loop { arch::halt(); }
+    }
+    let p = parent as usize;
+    // Wake parent if it's sleeping on this child.
+    if PROCS[p].sleeping && PROCS[p].wait_pid == PROCS[cur].pid {
+        PROCS[p].sleeping = false;
+        PROCS[p].wait_pid = 0;
+        PROCS[cur].reaped = true;
+        CTX[p][cx::RAX] = code as i64 as u64;
+    }
+    // Switch to next runnable process (prefer parent if it's awake).
+    let target = next_runnable(cur).or_else(|| {
+        if PROCS[p].used && !PROCS[p].exited && !PROCS[p].sleeping {
+            Some(p)
+        } else {
+            None
+        }
+    });
+    match target {
+        Some(j) => { switch_to(j); 0 }
+        None => {
+            arch::log("sigma-kernel: no runnable process\n");
+            loop { arch::halt(); }
         }
     }
 }
@@ -703,7 +758,8 @@ fn run_init(
         USER_BRK = 0x10000000;
         // Register /init as process 0 (pid 1, no parent).
         PROCS[0] = ProcSlot {
-            used: true, exited: false, pid: 1, parent: -1,
+            used: true, exited: false, sleeping: false, wait_pid: 0,
+            reaped: false, pid: 1, parent: -1,
             exit_code: 0, pml4: tables.cr3, brk: USER_BRK,
         };
         NEXT_PID = 2;
