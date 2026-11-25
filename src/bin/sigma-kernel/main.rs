@@ -425,20 +425,50 @@ pub struct ProcSlot {
 }
 
 const MAX_FDS: usize = 8;
+const MAX_PIPES: usize = 4;
+const PIPE_BUF_SIZE: usize = 4096;
+
+/// Fd kinds: regular file, pipe read end, pipe write end.
+pub const FD_FILE: u8 = 0;
+pub const FD_PIPE_READ: u8 = 1;
+pub const FD_PIPE_WRITE: u8 = 2;
+
+/// A kernel pipe: fixed-size FIFO buffer shared by two fds.
+/// head = read index, tail = write index, count = bytes buffered.
+#[derive(Clone, Copy)]
+pub struct Pipe {
+    pub used: bool,
+    pub buf: [u8; PIPE_BUF_SIZE],
+    pub head: usize,
+    pub tail: usize,
+    pub count: usize,
+}
+
+impl Pipe {
+    const fn new() -> Self {
+        Self { used: false, buf: [0; PIPE_BUF_SIZE], head: 0, tail: 0, count: 0 }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct FdEnt {
     pub used: bool,
+    pub kind: u8,
+    pub pipe_id: u8,
     pub path: [u8; 64],
     pub len: u32,
     pub off: u64,
 }
 
+pub static mut PIPES: [Pipe; MAX_PIPES] = [
+    Pipe::new(), Pipe::new(), Pipe::new(), Pipe::new(),
+];
+
 pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     used: false, exited: false, sleeping: false, wait_pid: 0,
     reaped: false, pid: 0, parent: -1,
     exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
-    fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
+    fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
 }; NPROCS];
 static mut NEXT_PID: u64 = 1;
 /// Index of the currently running process.
@@ -617,7 +647,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         reaped: false, pid,
         parent: CUR_PROC as i64, exit_code: 0,
         pml4: tables.cr3, brk: USER_BRK, frame_count,
-        fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
+        fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
     };
     switch_to(slot);
     pid as i64
@@ -680,7 +710,7 @@ unsafe fn reap_process(idx: usize) {
         used: false, exited: false, sleeping: false, wait_pid: 0,
         reaped: false, pid: 0, parent: -1,
         exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
-        fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
+        fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
     };
 }
 
@@ -826,7 +856,7 @@ fn run_init(
             used: true, exited: false, sleeping: false, wait_pid: 0,
             reaped: false, pid: 1, parent: -1,
             exit_code: 0, pml4: tables.cr3, brk: USER_BRK, frame_count: init_frames,
-            fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
+            fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
         };
         NEXT_PID = 2;
         CUR_PROC = 0;

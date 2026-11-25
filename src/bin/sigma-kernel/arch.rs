@@ -208,7 +208,13 @@ pub struct TrapSvc;
 impl kernel::syscall::KernelServices for TrapSvc {
     fn write(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
         if fd != 1 && fd != 2 {
-            return -9;
+            // Check if it's a pipe write fd.
+            if let Some(f) = unsafe { crate::fd_get(fd) } {
+                if f.kind == crate::FD_PIPE_WRITE {
+                    return self.sys_pipe_write(f.pipe_id as usize, ptr, len);
+                }
+            }
+            return -9; // EBADF
         }
         // SAFETY: user pages are mapped under the active (user) CR3.
         let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
@@ -273,6 +279,9 @@ impl kernel::syscall::KernelServices for TrapSvc {
         // 3. Set up new stack and argv/envp
         // 4. Jump to new entry point
         -38 // ENOSYS
+    }
+    fn pipe(&mut self) -> i64 {
+        self.sys_pipe()
     }
     fn brk(&mut self, addr: u64) -> i64 {
         const PAGE: u64 = 4096;
@@ -517,6 +526,8 @@ impl TrapSvc {
         unsafe {
             let f = crate::fd_get((slot as u64) + 3).unwrap();
             f.used = true;
+            f.kind = crate::FD_FILE;
+            f.pipe_id = 0;
             f.len = path_len as u32;
             f.off = 0;
             f.path[..path_len as usize].copy_from_slice(bytes);
@@ -524,7 +535,7 @@ impl TrapSvc {
         (slot as i64) + 3
     }
 
-    /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file at offset.
+    /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file or pipe.
     fn sys_read(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
         if fd == 0 {
             // console input: PS/2 keyboard, then serial RX
@@ -542,6 +553,9 @@ impl TrapSvc {
             Some(f) => f,
             None => return -9, // EBADF
         };
+        if f.kind == crate::FD_PIPE_READ {
+            return self.sys_pipe_read(f.pipe_id as usize, ptr, len);
+        }
         let path = match core::str::from_utf8(&f.path[..f.len as usize]) {
             Ok(s) => s,
             Err(_) => return -14,
@@ -563,6 +577,112 @@ impl TrapSvc {
         }
         f.off += n as u64;
         n as i64
+    }
+
+    /// pipe_read(pipe_id, ptr, len): read bytes from a pipe buffer.
+    /// Returns bytes read, 0 on EOF (write end closed), -11 if empty.
+    fn sys_pipe_read(&mut self, pipe_id: usize, ptr: u64, len: u64) -> i64 {
+        if pipe_id >= crate::MAX_PIPES {
+            return -9; // EBADF
+        }
+        let p = unsafe { &mut crate::PIPES[pipe_id] };
+        if !p.used || p.count == 0 {
+            // Check if any write fd still references this pipe.
+            let mut any_write = false;
+            for i in 0..crate::NPROCS {
+                for fd in 0..crate::MAX_FDS {
+                    let f = unsafe { &crate::PROCS[i].fds[fd] };
+                    if f.used && f.kind == crate::FD_PIPE_WRITE && f.pipe_id as usize == pipe_id {
+                        any_write = true;
+                        break;
+                    }
+                }
+                if any_write { break; }
+            }
+            return if any_write { -11 } else { 0 }; // EAGAIN or EOF
+        }
+        let n = len.min(p.count as u64) as usize;
+        // Copy n bytes from pipe buffer (circular).
+        let mut copied = 0;
+        while copied < n {
+            let b = p.buf[p.head];
+            // SAFETY: user buf mapped.
+            unsafe { *((ptr as *mut u8).add(copied)) = b };
+            p.head = (p.head + 1) % crate::PIPE_BUF_SIZE;
+            p.count -= 1;
+            copied += 1;
+        }
+        copied as i64
+    }
+
+    /// pipe_write(pipe_id, ptr, len): write bytes to a pipe buffer.
+    /// Returns bytes written or -11 if full.
+    fn sys_pipe_write(&mut self, pipe_id: usize, ptr: u64, len: u64) -> i64 {
+        if pipe_id >= crate::MAX_PIPES {
+            return -9; // EBADF
+        }
+        let p = unsafe { &mut crate::PIPES[pipe_id] };
+        if !p.used {
+            return -9; // EBADF
+        }
+        let space = crate::PIPE_BUF_SIZE - p.count;
+        let n = (len as usize).min(space);
+        if n == 0 {
+            return -11; // EAGAIN (buffer full)
+        }
+        let mut copied = 0;
+        while copied < n {
+            let b = unsafe { *((ptr as *const u8).add(copied)) };
+            p.buf[p.tail] = b;
+            p.tail = (p.tail + 1) % crate::PIPE_BUF_SIZE;
+            p.count += 1;
+            copied += 1;
+        }
+        copied as i64
+    }
+
+    /// pipe(): create a pipe, return (read_fd, write_fd) packed.
+    fn sys_pipe(&mut self) -> i64 {
+        // Find a free pipe slot.
+        let pipe_id = unsafe {
+            match crate::PIPES.iter().position(|p| !p.used) {
+                Some(i) => i,
+                None => return -28, // ENOSPC
+            }
+        };
+        // Allocate two fds.
+        let read_slot = match unsafe { crate::fd_alloc() } {
+            Some(s) => s,
+            None => return -24, // EMFILE
+        };
+        let write_slot = match unsafe { crate::fd_alloc() } {
+            Some(s) => s,
+            None => return -24,
+        };
+        unsafe {
+            crate::PIPES[pipe_id].used = true;
+            crate::PIPES[pipe_id].head = 0;
+            crate::PIPES[pipe_id].tail = 0;
+            crate::PIPES[pipe_id].count = 0;
+
+            let rf = crate::fd_get((read_slot as u64) + 3).unwrap();
+            rf.used = true;
+            rf.kind = crate::FD_PIPE_READ;
+            rf.pipe_id = pipe_id as u8;
+            rf.len = 0;
+            rf.off = 0;
+
+            let wf = crate::fd_get((write_slot as u64) + 3).unwrap();
+            wf.used = true;
+            wf.kind = crate::FD_PIPE_WRITE;
+            wf.pipe_id = pipe_id as u8;
+            wf.len = 0;
+            wf.off = 0;
+        }
+        // Return (write_fd << 32) | read_fd
+        let read_fd = (read_slot as u64) + 3;
+        let write_fd = (write_slot as u64) + 3;
+        ((write_fd << 32) | read_fd) as i64
     }
 
     fn sys_close(&mut self, fd: u64) -> i64 {
