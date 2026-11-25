@@ -29,6 +29,7 @@ pub mod virtio_gpu;
 pub mod virtio_mmio;
 pub mod virtio_net;
 pub mod vfs;
+pub mod window_manager;
 
 pub use error::KernelError;
 
