@@ -366,32 +366,208 @@ pub unsafe fn sys_vfs() -> &'static kernel::vfs::Vfs {
     unsafe { VFS.as_ref().unwrap() }
 }
 
-/* ---- ring-3 user entry ---- */
+/* ---- ring-3 user entry + process table ---- */
 
 extern "C" {
     fn enter_user(entry: u64, rsp: u64, cr3: u64) -> !;
-    static mut sf_rax: u64;
-    static mut sf_rcx: u64;
-    static mut sf_r11: u64;
-    static mut sf_rdi: u64;
-    static mut sf_rsi: u64;
-    static mut sf_rdx: u64;
-    static mut sf_r10: u64;
-    static mut sf_r8: u64;
-    static mut sf_r9: u64;
+    static mut cur_ctx: u64;
+    static mut next_ctx: u64;
+    static mut switch_req: u64;
 }
 
-/// Syscall trap entry — called from asm `syscall_entry` with user
-/// registers saved in the sf_* frame. Dispatches through the
-/// kernel ABI and returns the result in rax.
+/// Max concurrent user processes (cooperative — one runs at a time).
+pub const NPROCS: usize = 4;
+
+/// ctx slot indices — must match pvh.asm syscall_entry layout.
+mod cx {
+    pub const RAX: usize = 0;
+    pub const RIP: usize = 1;
+    pub const RDX: usize = 2;
+    pub const RSI: usize = 3;
+    pub const RDI: usize = 4;
+    pub const R8: usize = 5;
+    pub const R9: usize = 6;
+    pub const R10: usize = 7;
+    pub const RBX: usize = 8;
+    pub const RBP: usize = 9;
+    pub const R12: usize = 10;
+    pub const R13: usize = 11;
+    pub const R14: usize = 12;
+    pub const R15: usize = 13;
+    pub const SP: usize = 14;
+    pub const FL: usize = 15;
+    pub const CR3: usize = 16;
+}
+
+/// Per-process saved user context (17 u64s, asm layout above).
+static mut CTX: [[u64; 17]; NPROCS] = [[0; 17]; NPROCS];
+
+/// Process table entry — the Linux task_struct analogue, minimal.
+#[derive(Clone, Copy)]
+pub struct ProcSlot {
+    pub used: bool,
+    pub exited: bool,
+    pub pid: u64,
+    pub parent: i64,
+    pub exit_code: u64,
+    pub pml4: u64,
+    pub brk: u64,
+}
+
+pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
+    used: false, exited: false, pid: 0, parent: -1,
+    exit_code: 0, pml4: 0, brk: 0,
+}; NPROCS];
+static mut NEXT_PID: u64 = 1;
+/// Index of the currently running process.
+pub static mut CUR_PROC: usize = 0;
+
+/// Switch the running process: saves the current globals into its
+/// slot, loads the target's, and asks asm to load next_ctx.
+/// (Linux `context_switch` + `__switch_to` analogue.)
+unsafe fn switch_to(idx: usize) {
+    let cur = CUR_PROC;
+    PROCS[cur].pml4 = USER_PML4;
+    PROCS[cur].brk = USER_BRK;
+    CUR_PROC = idx;
+    USER_PML4 = PROCS[idx].pml4;
+    USER_BRK = PROCS[idx].brk;
+    cur_ctx = CTX[idx].as_mut_ptr() as u64;
+    next_ctx = cur_ctx;
+    switch_req = 1;
+}
+
+/// Syscall trap entry — called from asm `syscall_entry` with the
+/// full user context saved in the current ctx. Handles process
+/// syscalls (SPAWN/WAIT/EXIT) directly; everything else goes through
+/// the kernel ABI dispatch.
 #[no_mangle]
 pub extern "C" fn syscall_trap() -> i64 {
-    // SAFETY: frame written by syscall_entry asm before the call.
+    // SAFETY: ctx written by syscall_entry asm before the call.
     unsafe {
-        let nr = sf_rax;
-        let args = [sf_rdi, sf_rsi, sf_rdx, sf_r10, sf_r8, sf_r9];
-        let mut svc = arch::TrapSvc;
-        kernel::syscall::dispatch(nr, &args, &mut svc)
+        switch_req = 0;
+        let ctx = cur_ctx as *mut u64;
+        let nr = *ctx;
+        // arg regs rdi,rsi,rdx,r10,r8,r9 -> ctx slots 4,3,2,7,5,6
+        let args = [
+            *ctx.add(cx::RDI), *ctx.add(cx::RSI), *ctx.add(cx::RDX),
+            *ctx.add(cx::R10), *ctx.add(cx::R8), *ctx.add(cx::R9),
+        ];
+        use kernel::syscall::nr;
+        match nr {
+            nr::SPAWN => sys_spawn(args[0], args[1]),
+            nr::WAIT => sys_wait(args[0]),
+            nr::EXIT => sys_exit(args[0]),
+            _ => {
+                let mut svc = arch::TrapSvc;
+                kernel::syscall::dispatch(nr, &args, &mut svc)
+            }
+        }
+    }
+}
+
+/// SPAWN(path_ptr, path_len): load an ELF from the VFS into a fresh
+/// address space and context-switch to it. Returns the child pid to
+/// the *parent* (stored in its ctx before the switch).
+unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
+    if p_len == 0 || p_len > 64 {
+        return -22;
+    }
+    // SAFETY: user path buffer mapped under the active (parent) CR3.
+    let pb = unsafe { core::slice::from_raw_parts(p_ptr as *const u8, p_len as usize) };
+    let path = match core::str::from_utf8(pb) {
+        Ok(s) => s,
+        Err(_) => return -14,
+    };
+    let Some(elf) = (unsafe { sys_vfs() }).read(path) else {
+        return -2; // ENOENT
+    };
+    let Some(slot) = (0..NPROCS).find(|&i| !PROCS[i].used) else {
+        return -11; // EAGAIN: process table full
+    };
+    let alloc = match USER_ALLOC.as_mut() {
+        Some(a) => a,
+        None => return -12,
+    };
+    let img = match kernel::process::load_image(elf, alloc) {
+        Ok(i) => i,
+        Err(_) => return -12,
+    };
+    let mut pages = Vec::new();
+    for s in &img.segments {
+        for i in 0..s.frames {
+            pages.push((s.vaddr + i * 4096, s.phys + i * 4096));
+        }
+    }
+    let stack_lo = kernel::process::USER_STACK_TOP - img.stack_pages * 4096;
+    for i in 0..img.stack_pages {
+        pages.push((stack_lo + i * 4096, img.stack_phys + i * 4096));
+    }
+    let tables = match kernel::usermem::build_user_tables(
+        &pages, 0x200000, alloc, &mut arch::IdentityPhysMem,
+    ) {
+        Ok(t) => t,
+        Err(_) => return -12,
+    };
+    for s in &img.segments {
+        let len = (s.frames * 4096) as usize;
+        // SAFETY: phys is a freshly allocated frame range we own.
+        let dst = unsafe { core::slice::from_raw_parts_mut(s.phys as *mut u8, len) };
+        if kernel::process::materialize_with_offset(
+            elf, s.offset, s.filesz, s.memsz, s.delta, dst,
+        ).is_err() {
+            return -12;
+        }
+    }
+    let pid = NEXT_PID;
+    NEXT_PID += 1;
+    // Child ctx: fresh register state, entry/rsp/rflags/cr3 set.
+    let c = &mut CTX[slot];
+    for v in c.iter_mut() {
+        *v = 0;
+    }
+    c[cx::RIP] = img.entry;
+    c[cx::SP] = kernel::process::initial_rsp(&img);
+    c[cx::FL] = 0x202; // IF=1
+    c[cx::CR3] = tables.cr3;
+    PROCS[slot] = ProcSlot {
+        used: true, exited: false, pid,
+        parent: CUR_PROC as i64, exit_code: 0,
+        pml4: tables.cr3, brk: USER_BRK,
+    };
+    switch_to(slot);
+    pid as i64
+}
+
+/// WAIT(pid): reap a child's exit status. Cooperative scheduling
+/// means a non-exited child can't be waited on yet -> EAGAIN.
+unsafe fn sys_wait(pid: u64) -> i64 {
+    for i in 0..NPROCS {
+        if PROCS[i].used && PROCS[i].pid == pid {
+            if !PROCS[i].exited {
+                return -11; // EAGAIN
+            }
+            return PROCS[i].exit_code as i64;
+        }
+    }
+    -3 // ESRCH
+}
+
+/// EXIT(code): mark the process exited and switch to its parent.
+/// Init (no parent) halts the system.
+unsafe fn sys_exit(code: u64) -> i64 {
+    let cur = CUR_PROC;
+    PROCS[cur].exited = true;
+    PROCS[cur].exit_code = code;
+    let parent = PROCS[cur].parent;
+    if parent >= 0 {
+        switch_to(parent as usize);
+        0
+    } else {
+        arch::log("sigma-kernel: init exit\n");
+        loop {
+            arch::halt();
+        }
     }
 }
 
@@ -494,6 +670,16 @@ fn run_init(
         USER_PML4 = tables.cr3;
         USER_ALLOC = Some(alloc);
         USER_BRK = 0x10000000;
+        // Register /init as process 0 (pid 1, no parent).
+        PROCS[0] = ProcSlot {
+            used: true, exited: false, pid: 1, parent: -1,
+            exit_code: 0, pml4: tables.cr3, brk: USER_BRK,
+        };
+        NEXT_PID = 2;
+        CUR_PROC = 0;
+        cur_ctx = CTX[0].as_mut_ptr() as u64;
+        next_ctx = cur_ctx;
+        switch_req = 0;
     }
     con.println("entering /init (ring 3)...");
     arch::log("sigma-kernel: entering user mode\n");

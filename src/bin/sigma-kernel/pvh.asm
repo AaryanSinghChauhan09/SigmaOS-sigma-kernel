@@ -636,52 +636,79 @@ enter_user:
     push %rdi              /* user rip */
     iretq
 
+/* Per-process user context — 17 u64 slots, written by syscall_entry:
+ *   0 rax(nr/result) 1 rip(rcx) 2 rdx 3 rsi 4 rdi 5 r8 6 r9 7 r10
+ *   8 rbx 9 rbp 10 r12 11 r13 12 r14 13 r15 14 user_sp 15 rflags(r11)
+ *   16 cr3
+ * cur_ctx -> current ctx; next_ctx/switch_req implement SPAWN/EXIT
+ * context switches (Linux context_switch analogue). */
+.global cur_ctx
+.global next_ctx
+.global switch_req
+.global tmp_r11
+
 .global syscall_entry
 syscall_entry:
-    /* Mask IRQs for the duration of kernel syscall handling —
-     * the user's rflags (IF=1) is preserved in r11 and restored
-     * by sysret, so user mode keeps ticking afterwards. */
     cli
-    /* syscall leaves RSP=user rsp; switch to kernel stack.
-     * rcx=user rip, r11=user rflags (clobbered by syscall). */
-    mov %rsp, user_sp
-    movabs $stack_top, %rsp
-    mov %rax, sf_rax
-    mov %rcx, sf_rcx
-    mov %r11, sf_r11
-    mov %rdi, sf_rdi
-    mov %rsi, sf_rsi
-    mov %rdx, sf_rdx
-    mov %r10, sf_r10
-    mov %r8,  sf_r8
-    mov %r9,  sf_r9
-    call syscall_trap      /* returns result in rax */
-    mov user_sp, %rsp
-    mov sf_rcx, %rcx
-    mov sf_r11, %r11
-    /* Restore every user arg register — syscall_trap clobbered
-     * them and sysret does not. Without this, userspace sees
-     * garbage in rdi/rsi/rdx/r10/r8/r9 after every syscall. */
-    mov sf_rdi, %rdi
-    mov sf_rsi, %rsi
-    mov sf_rdx, %rdx
-    mov sf_r10, %r10
-    mov sf_r8,  %r8
-    mov sf_r9,  %r9
+    mov %r11, tmp_r11
+    movabs $cur_ctx, %r11
+    mov (%r11), %r11          /* r11 = current ctx base */
+    mov %rsp, 112(%r11)       /* ctx.user_sp (rsp still user) */
+    movabs $stack_top, %rsp   /* switch to kernel stack */
+    mov %rax, 0(%r11)
+    mov %rcx, 8(%r11)
+    mov %rdx, 16(%r11)
+    mov %rsi, 24(%r11)
+    mov %rdi, 32(%r11)
+    mov %r8,  40(%r11)
+    mov %r9,  48(%r11)
+    mov %r10, 56(%r11)
+    mov %rbx, 64(%r11)
+    mov %rbp, 72(%r11)
+    mov %r12, 80(%r11)
+    mov %r13, 88(%r11)
+    mov %r14, 96(%r11)
+    mov %r15, 104(%r11)
+    mov %cr3, %rax
+    mov %rax, 128(%r11)       /* ctx.cr3 */
+    mov %r11, %rbx            /* rbx = ctx ptr (user rbx saved) */
+    mov tmp_r11, %rax
+    mov %rax, 120(%r11)       /* ctx.rflags */
+    call syscall_trap         /* rax = result; may set switch_req */
+    mov %rax, 0(%rbx)         /* ctx.rax = result */
+    movabs $switch_req, %rax
+    cmpq $0, (%rax)
+    je 1f
+    movabs $next_ctx, %rax
+    mov (%rax), %r11          /* target ctx */
+    jmp 2f
+1:  mov %rbx, %r11           /* own ctx */
+2:  mov 128(%r11), %rax
+    mov %rax, %cr3            /* target address space */
+    mov 0(%r11), %rax
+    mov 8(%r11), %rcx
+    mov 16(%r11), %rdx
+    mov 24(%r11), %rsi
+    mov 32(%r11), %rdi
+    mov 40(%r11), %r8
+    mov 48(%r11), %r9
+    mov 56(%r11), %r10
+    mov 64(%r11), %rbx
+    mov 72(%r11), %rbp
+    mov 80(%r11), %r12
+    mov 88(%r11), %r13
+    mov 96(%r11), %r14
+    mov 104(%r11), %r15
+    mov 112(%r11), %rsp       /* user rsp */
+    mov 120(%r11), %r11       /* user rflags (last reg load) */
     sysretq
 
 .section .bss
 .align 8
-user_sp:   .quad 0
-sf_rax:    .quad 0
-sf_rcx:    .quad 0
-sf_r11:    .quad 0
-sf_rdi:    .quad 0
-sf_rsi:    .quad 0
-sf_rdx:    .quad 0
-sf_r10:    .quad 0
-sf_r8:     .quad 0
-sf_r9:     .quad 0
-tick_ctr:  .quad 0
-irq_vec:   .long 0
+cur_ctx:    .quad 0
+next_ctx:   .quad 0
+switch_req: .quad 0
+tmp_r11:    .quad 0
+tick_ctr:   .quad 0
+irq_vec:    .long 0
 tss:       .skip 104

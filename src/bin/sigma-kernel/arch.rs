@@ -212,7 +212,10 @@ impl kernel::syscall::KernelServices for TrapSvc {
         log("sigma-kernel: user exit\n");
         loop { core::hint::spin_loop() }
     }
-    fn pid(&self) -> u64 { 1 }
+    fn pid(&self) -> u64 {
+        // SAFETY: single-threaded syscall context.
+        unsafe { crate::PROCS[crate::CUR_PROC].pid }
+    }
     fn kernel_version(&self) -> &'static str { kernel::KERNEL_VERSION }
     fn open(&mut self, path_ptr: u64, path_len: u64, flags: u64) -> i64 {
         self.sys_open(path_ptr, path_len, flags)
