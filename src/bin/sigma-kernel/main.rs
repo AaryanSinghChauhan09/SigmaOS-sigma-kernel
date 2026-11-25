@@ -96,14 +96,83 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
         bi.framebuffer.is_some(),
         bi.cmdline
     ));
-    if let Some(fb) = &bi.framebuffer {
-        arch::log(&alloc::format!(
-            "sigma-kernel: fb {}x{} @ {:x}\n",
-            fb.width, fb.height, fb.addr
-        ));
+
+    // VGA text console + serial mirror.
+    let mut con = kernel::console::TextConsole::new(
+        arch::VgaBuf,
+        kernel::console::attr::make(kernel::console::attr::LIGHT_GREEN, kernel::console::attr::BLACK),
+    );
+    con.println("SigmaOS kernel — PVH boot");
+    con.println(&alloc::format!(
+        "mem regions: {}   modules: {}",
+        bi.mem_regions.len(),
+        bi.modules.len()
+    ));
+
+    // Mount the initramfs module — scan modules for the cpio magic.
+    let mut vfs = kernel::vfs::Vfs::new();
+    let mut initrd: Option<&[u8]> = None;
+    for &(paddr, size) in &bi.modules {
+        // SAFETY: module paddr/size come from hvm_start_info; identity-mapped.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(paddr as *const u8, size as usize)
+        };
+        if bytes.len() >= 6 && &bytes[..6] == b"070701" {
+            initrd = Some(bytes);
+            break;
+        }
     }
-    arch::log("sigma-kernel: idle\n");
+    if let Some(bytes) = initrd {
+        match vfs.load_cpio_newc(bytes) {
+            Ok(()) => {
+                arch::log(&alloc::format!("sigma-kernel: initramfs mounted ({} nodes)\n", vfs.len()));
+                con.println(&alloc::format!("initramfs: {} nodes", vfs.len()));
+                if let Some(list) = vfs.list("/") {
+                    for name in list {
+                        con.println(&alloc::format!("  /{}", name));
+                    }
+                }
+                if let Some(init) = vfs.read("/init") {
+                    arch::log(&alloc::format!("sigma-kernel: /init present ({} bytes)\n", init.len()));
+                    con.println(&alloc::format!("/init: {} bytes", init.len()));
+                }
+            }
+            Err(e) => {
+                arch::log(&alloc::format!("sigma-kernel: initramfs error {:?}\n", e));
+                con.println("initramfs: parse error");
+            }
+        }
+    } else {
+        arch::log("sigma-kernel: no initramfs module\n");
+        con.println("no initramfs module");
+    }
+
+    // PS/2 keyboard + interactive echo.
+    let mut kbd = kernel::ps2::Keyboard::new(arch::Ps2Hw);
+    con.println("type on keyboard (echo to serial+vga)...");
+    let mut line = alloc::string::String::new();
     loop {
+        kbd.poll();
+        for key in kbd.drain() {
+            match key {
+                kernel::ps2::Key::Char(c) => {
+                    con.put_byte(c);
+                    arch::log(core::str::from_utf8(&[c]).unwrap_or(""));
+                    line.push(c as char);
+                }
+                kernel::ps2::Key::Enter => {
+                    con.newline_pub();
+                    arch::log("\n");
+                    con.println(&alloc::format!("got: {}", line));
+                    line.clear();
+                }
+                kernel::ps2::Key::Backspace => {
+                    line.pop();
+                    con.backspace_pub();
+                }
+                _ => {}
+            }
+        }
         arch::halt();
     }
 }

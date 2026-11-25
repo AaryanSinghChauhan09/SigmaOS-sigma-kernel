@@ -82,6 +82,9 @@ impl Vfs {
                 .map_err(|_| KernelError::Fs("bad cpio name"))?
                 .trim_end_matches('\0')
                 .to_string();
+            if name == "TRAILER!!!" {
+                break;
+            }
             let _ = (nlink, devmajor, devminor, rdevmajor, rdevminor);
 
             // data starts after name, padded to 4-byte boundary

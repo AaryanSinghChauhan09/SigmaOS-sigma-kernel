@@ -11,9 +11,11 @@ extern crate alloc;
 
 pub mod boot;
 pub mod compositor;
+pub mod console;
 pub mod error;
 pub mod fb;
 pub mod mm;
+pub mod ps2;
 pub mod syscall;
 pub mod uart;
 pub mod virtio;
