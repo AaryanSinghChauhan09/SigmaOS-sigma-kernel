@@ -11,6 +11,13 @@ path = "src/lib.rs"
 
 [dependencies]
 
+[build-dependencies]
+sigmaos-sigma-bootloader = { path = "../SigmaOS-sigma-bootloader" }
+
+[[bin]]
+name = "sigma-kernel"
+path = "src/bin/sigma-kernel/main.rs"
+
 [features]
 default = []
 # Enable std-backed tests on host.

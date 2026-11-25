@@ -10,12 +10,16 @@
 extern crate alloc;
 
 pub mod boot;
+pub mod compositor;
 pub mod error;
 pub mod fb;
 pub mod mm;
 pub mod syscall;
 pub mod uart;
 pub mod virtio;
+pub mod virtio_blk;
+pub mod virtio_gpu;
+pub mod virtio_net;
 pub mod vfs;
 
 pub use error::KernelError;

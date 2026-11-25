@@ -56,6 +56,8 @@ pub struct BootInfo {
     pub mem_regions: Vec<MemRegion>,
     pub framebuffer: Option<FramebufferInfo>,
     pub cmdline: Option<alloc::string::String>,
+    /// Boot modules (e.g. initrd) as (paddr, size) pairs.
+    pub modules: Vec<(u64, u64)>,
 }
 
 /// MB2 tag type constants.
@@ -81,6 +83,7 @@ pub fn parse_mb2(bytes: &[u8]) -> Result<BootInfo, KernelError> {
         mem_regions: Vec::new(),
         framebuffer: None,
         cmdline: None,
+        modules: Vec::new(),
     };
 
     let mut off = 8usize;
@@ -179,6 +182,179 @@ pub fn usable_ram(info: &BootInfo) -> u64 {
         .filter(|r| r.mem_type == 1)
         .map(|r| r.len)
         .sum()
+}
+
+/// MB1 magic value passed in %eax by the bootloader.
+pub const MB1_MAGIC_EAX: u32 = 0x2BAD_B002;
+
+/// Multiboot1 info struct — first 48 bytes are fixed fields;
+/// the mmap table lives elsewhere in memory (addr in field 28).
+#[derive(Debug, Clone)]
+pub struct Mb1InfoHeader {
+    pub flags: u32,
+    pub mem_lower_kb: u32,
+    pub mem_upper_kb: u32,
+    pub boot_device: u32,
+    pub cmdline_ptr: u32,
+    pub mods_count: u32,
+    pub mods_ptr: u32,
+    pub mmap_ptr: u32,
+    pub mmap_len: u32,
+}
+
+impl Mb1InfoHeader {
+    /// Parse the fixed part of an MB1 info struct.
+    pub fn parse(bytes: &[u8]) -> Result<Self, KernelError> {
+        if bytes.len() < 48 {
+            return Err(KernelError::BootInfo("mb1 info too small"));
+        }
+        let u32at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+        Ok(Self {
+            flags: u32at(0),
+            mem_lower_kb: u32at(4),
+            mem_upper_kb: u32at(8),
+            boot_device: u32at(12),
+            cmdline_ptr: u32at(16),
+            mods_count: u32at(20),
+            mods_ptr: u32at(24),
+            mmap_ptr: u32at(28),
+            mmap_len: u32at(32),
+        })
+    }
+}
+
+/// Parse an MB1 mmap entry: size u32, base u64, length u64, type u32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mb1MmapEntry {
+    pub base: u64,
+    pub len: u64,
+    /// MB1 type: 1 = usable RAM.
+    pub mem_type: u32,
+}
+
+impl Mb1MmapEntry {
+    /// Parse one mmap entry (24 bytes, size field includes header).
+    pub fn parse(bytes: &[u8]) -> Result<Self, KernelError> {
+        if bytes.len() < 24 {
+            return Err(KernelError::BootInfo("mb1 mmap entry too small"));
+        }
+        let size = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        if size < 24 {
+            return Err(KernelError::BootInfo("mb1 mmap entry bad size"));
+        }
+        Ok(Self {
+            base: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            len: u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+            mem_type: u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+        })
+    }
+}
+
+/// Build BootInfo from MB1 pieces already copied out of low memory.
+///
+/// `info_bytes` = fixed 48-byte header, `mmap_bytes` = mmap table,
+/// `cmdline` = kernel command line string if any.
+pub fn parse_mb1(
+    info_bytes: &[u8],
+    mmap_bytes: &[u8],
+    cmdline: Option<alloc::string::String>,
+) -> Result<BootInfo, KernelError> {
+    let hdr = Mb1InfoHeader::parse(info_bytes)?;
+    let mut info = BootInfo {
+        mem_regions: Vec::new(),
+        framebuffer: None,
+        cmdline,
+        modules: Vec::new(),
+    };
+    // low memory below 1 MiB is usable
+    info.mem_regions.push(MemRegion {
+        start: 0,
+        len: (hdr.mem_lower_kb as u64) * 1024,
+        mem_type: 1,
+    });
+    // mmap entries are variable-length; walk by size field
+    let mut off = 0usize;
+    while off + 24 <= mmap_bytes.len() {
+        let entry = Mb1MmapEntry::parse(&mmap_bytes[off..])?;
+        let size = u32::from_le_bytes(
+            mmap_bytes[off..off + 4].try_into().unwrap(),
+        ) as usize;
+        if size == 0 {
+            break;
+        }
+        info.mem_regions.push(MemRegion {
+            start: entry.base,
+            len: entry.len,
+            mem_type: entry.mem_type,
+        });
+        off += size;
+        // entries are 4-byte aligned in the table
+        off = (off + 3) & !3;
+    }
+    // mem_upper_kb is a fallback when the mmap table is empty
+    if info.mem_regions.len() == 1 && hdr.mem_upper_kb > 0 {
+        info.mem_regions.push(MemRegion {
+            start: 1024 * 1024,
+            len: (hdr.mem_upper_kb as u64) * 1024,
+            mem_type: 1,
+        });
+    }
+    Ok(info)
+}
+
+/// hvm_start_info magic ("xEn3" with high bit set).
+pub const PVH_MAGIC: u32 = 0x336E_C578;
+
+/// PVH (x86/HVM direct boot) start-info parser.
+///
+/// `info_bytes` is the fixed 56-byte hvm_start_info header,
+/// `memmap_bytes` the hvm_memmap_table_entry array (24 bytes each),
+/// `modules` the (paddr, size) pairs from modlist,
+/// `cmdline` the kernel command line if present.
+pub fn parse_pvh(
+    info_bytes: &[u8],
+    memmap_bytes: &[u8],
+    modules: Vec<(u64, u64)>,
+    cmdline: Option<alloc::string::String>,
+) -> Result<BootInfo, KernelError> {
+    if info_bytes.len() < 56 {
+        return Err(KernelError::BootInfo("pvh start_info too small"));
+    }
+    let magic = u32::from_le_bytes(info_bytes[0..4].try_into().unwrap());
+    if magic != PVH_MAGIC {
+        return Err(KernelError::BootInfo("bad pvh magic"));
+    }
+    let version = u32::from_le_bytes(info_bytes[4..8].try_into().unwrap());
+    if version == 0 {
+        return Err(KernelError::BootInfo("pvh version 0 unsupported"));
+    }
+    let memmap_paddr = u64::from_le_bytes(info_bytes[40..48].try_into().unwrap());
+    let memmap_entries = u32::from_le_bytes(info_bytes[48..52].try_into().unwrap());
+    let _ = memmap_paddr; // physical addr; caller already dereferenced
+
+    let mut info = BootInfo {
+        mem_regions: Vec::new(),
+        framebuffer: None,
+        cmdline,
+        modules,
+    };
+
+    // Walk the memmap table (24-byte entries).
+    let mut off = 0usize;
+    let mut count = 0u32;
+    while off + 24 <= memmap_bytes.len() && count < memmap_entries {
+        let base = u64::from_le_bytes(memmap_bytes[off..off + 8].try_into().unwrap());
+        let size = u64::from_le_bytes(memmap_bytes[off + 8..off + 16].try_into().unwrap());
+        let mtype = u32::from_le_bytes(memmap_bytes[off + 16..off + 20].try_into().unwrap());
+        info.mem_regions.push(MemRegion {
+            start: base,
+            len: size,
+            mem_type: mtype,
+        });
+        off += 24;
+        count += 1;
+    }
+    Ok(info)
 }
 
 #[cfg(test)]

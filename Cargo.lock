@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "sigmaos-sigma-bootloader"
+version = "0.1.0"
+
+[[package]]
 name = "sigmaos-sigma-kernel"
 version = "0.1.0"
+dependencies = [
+ "sigmaos-sigma-bootloader",
+]

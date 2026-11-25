@@ -1,0 +1,6 @@
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "link-args=-Tlinker.ld",
+    "-C", "link-args=-no-pie",
+    "-C", "relocation-model=static",
+]
