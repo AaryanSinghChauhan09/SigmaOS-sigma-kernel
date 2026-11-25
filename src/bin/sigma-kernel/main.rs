@@ -420,12 +420,13 @@ pub struct ProcSlot {
     pub exit_code: u64,
     pub pml4: u64,
     pub brk: u64,
+    pub frame_count: u16,    // Number of user frames allocated (for teardown)
 }
 
 pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     used: false, exited: false, sleeping: false, wait_pid: 0,
     reaped: false, pid: 0, parent: -1,
-    exit_code: 0, pml4: 0, brk: 0,
+    exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
 }; NPROCS];
 static mut NEXT_PID: u64 = 1;
 /// Index of the currently running process.
@@ -578,11 +579,12 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
     c[cx::SP] = kernel::process::initial_rsp(&img);
     c[cx::FL] = 0x202; // IF=1
     c[cx::CR3] = tables.cr3;
+    let frame_count = (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
     PROCS[slot] = ProcSlot {
         used: true, exited: false, sleeping: false, wait_pid: 0,
         reaped: false, pid,
         parent: CUR_PROC as i64, exit_code: 0,
-        pml4: tables.cr3, brk: USER_BRK,
+        pml4: tables.cr3, brk: USER_BRK, frame_count,
     };
     switch_to(slot);
     pid as i64
@@ -601,7 +603,10 @@ unsafe fn sys_wait(pid: u64) -> i64 {
                     return -10; // ECHILD: already reaped
                 }
                 PROCS[i].reaped = true;
-                return PROCS[i].exit_code as i64;
+                let status = PROCS[i].exit_code as i64;
+                // Reclaim the child's resources (page tables, frames).
+                reap_process(i);
+                return status;
             }
             // Child still alive: block until it exits.
             let cur = CUR_PROC;
@@ -618,6 +623,31 @@ unsafe fn sys_wait(pid: u64) -> i64 {
         }
     }
     -3 // ESRCH
+}
+
+/// Reclaim a process's resources: free page tables and user frames.
+/// Called by sys_wait after the child is reaped (Linux `release_task` analogue).
+unsafe fn reap_process(idx: usize) {
+    if !PROCS[idx].used {
+        return;
+    }
+    let alloc = match USER_ALLOC.as_mut() {
+        Some(a) => a,
+        None => return,
+    };
+    // Free the user page tables (PML4 and all subordinate tables).
+    let pml4 = PROCS[idx].pml4;
+    if pml4 != 0 {
+        kernel::usermem::free_user_tables(pml4, alloc, &mut arch::IdentityPhysMem);
+    }
+    // Note: user data frames are tracked but not yet freed because
+    // we don't have a per-process frame list. This is a known gap.
+    // For now, we just mark the slot as unused.
+    PROCS[idx] = ProcSlot {
+        used: false, exited: false, sleeping: false, wait_pid: 0,
+        reaped: false, pid: 0, parent: -1,
+        exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
+    };
 }
 
 /// EXIT(code): mark the process exited, wake the waiting parent,
@@ -757,10 +787,11 @@ fn run_init(
         USER_ALLOC = Some(alloc);
         USER_BRK = 0x10000000;
         // Register /init as process 0 (pid 1, no parent).
+        let init_frames = (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
         PROCS[0] = ProcSlot {
             used: true, exited: false, sleeping: false, wait_pid: 0,
             reaped: false, pid: 1, parent: -1,
-            exit_code: 0, pml4: tables.cr3, brk: USER_BRK,
+            exit_code: 0, pml4: tables.cr3, brk: USER_BRK, frame_count: init_frames,
         };
         NEXT_PID = 2;
         CUR_PROC = 0;

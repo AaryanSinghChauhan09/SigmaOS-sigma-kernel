@@ -326,6 +326,40 @@ pub fn user_pte(
     Some((pte_addr, e))
 }
 
+/// Free all page-table pages for a user CR3 (PML4, PDPT, PD, PTs).
+/// Does NOT free user data frames — those are the caller's responsibility.
+/// (Linux `pgd_free` + `pud_free` + `pmd_free` + `pte_free` analogue.)
+pub fn free_user_tables(
+    pml4: u64,
+    alloc: &mut FrameAllocator,
+    phys_mem: &mut dyn PhysMem,
+) {
+    // Walk PML4[0] -> PDPT[0] -> PD and free all table pages.
+    let pdpt_e = get_entry(phys_mem, pml4, 0);
+    if pdpt_e & P_PRESENT == 0 {
+        return;
+    }
+    let pdpt = pdpt_e & !0xfff;
+    let pd_e = get_entry(phys_mem, pdpt, 0);
+    if pd_e & P_PRESENT == 0 {
+        return;
+    }
+    let pd = pd_e & !0xfff;
+    // Free all PTs pointed to by PD entries that are PTs (not 2MiB pages).
+    for mi in 0..PT_ENTRIES {
+        let pde = get_entry(phys_mem, pd, mi);
+        if pde & P_PRESENT != 0 && pde & P_PS == 0 {
+            // It's a PT page — free it.
+            let pt = pde & !0xfff;
+            alloc.free_frame(pt);
+        }
+    }
+    // Free PD, PDPT, PML4.
+    alloc.free_frame(pd);
+    alloc.free_frame(pdpt);
+    alloc.free_frame(pml4);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
