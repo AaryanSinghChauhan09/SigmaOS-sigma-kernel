@@ -21,6 +21,7 @@ pub mod mm;
 pub mod process;
 pub mod ps2;
 pub mod syscall;
+pub mod theme;
 pub mod uart;
 pub mod usermem;
 pub mod virtio;
