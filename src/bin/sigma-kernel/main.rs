@@ -421,12 +421,24 @@ pub struct ProcSlot {
     pub pml4: u64,
     pub brk: u64,
     pub frame_count: u16,    // Number of user frames allocated (for teardown)
+    pub fds: [FdEnt; 8],      // Per-process file descriptor table
+}
+
+const MAX_FDS: usize = 8;
+
+#[derive(Clone, Copy)]
+pub struct FdEnt {
+    pub used: bool,
+    pub path: [u8; 64],
+    pub len: u32,
+    pub off: u64,
 }
 
 pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     used: false, exited: false, sleeping: false, wait_pid: 0,
     reaped: false, pid: 0, parent: -1,
     exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
+    fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
 }; NPROCS];
 static mut NEXT_PID: u64 = 1;
 /// Index of the currently running process.
@@ -445,6 +457,26 @@ unsafe fn switch_to(idx: usize) {
     cur_ctx = CTX[idx].as_mut_ptr() as u64;
     next_ctx = cur_ctx;
     switch_req = 1;
+}
+
+/// Get the current process's fd table (for arch.rs helpers).
+unsafe fn current_fds() -> &'static mut [FdEnt; MAX_FDS] {
+    &mut PROCS[CUR_PROC].fds
+}
+
+/// Allocate a new fd slot in the current process's fd table.
+unsafe fn fd_alloc() -> Option<usize> {
+    current_fds().iter().position(|f| !f.used)
+}
+
+/// Get an fd entry from the current process's fd table.
+unsafe fn fd_get(fd: u64) -> Option<&'static mut FdEnt> {
+    let i = fd.checked_sub(3)? as usize;
+    if i < MAX_FDS && current_fds()[i].used {
+        Some(&mut current_fds()[i])
+    } else {
+        None
+    }
 }
 
 /// Find the next runnable process (not exited, not sleeping) starting
@@ -585,6 +617,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         reaped: false, pid,
         parent: CUR_PROC as i64, exit_code: 0,
         pml4: tables.cr3, brk: USER_BRK, frame_count,
+        fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
     };
     switch_to(slot);
     pid as i64
@@ -647,6 +680,7 @@ unsafe fn reap_process(idx: usize) {
         used: false, exited: false, sleeping: false, wait_pid: 0,
         reaped: false, pid: 0, parent: -1,
         exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
+        fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
     };
 }
 
@@ -792,6 +826,7 @@ fn run_init(
             used: true, exited: false, sleeping: false, wait_pid: 0,
             reaped: false, pid: 1, parent: -1,
             exit_code: 0, pml4: tables.cr3, brk: USER_BRK, frame_count: init_frames,
+            fds: [FdEnt { used: false, path: [0; 64], len: 0, off: 0 }; 8],
         };
         NEXT_PID = 2;
         CUR_PROC = 0;

@@ -419,36 +419,7 @@ pub fn rdtsc() -> u64 {
     ((hi as u64) << 32) | lo as u64
 }
 
-/* ---- fd table + file syscalls for TrapSvc ---- */
-
-const MAX_FDS: usize = 8;
-
-#[derive(Clone, Copy)]
-struct FdEnt {
-    used: bool,
-    path: [u8; 64],
-    len: u32,
-    off: u64,
-}
-
-static mut FDS: [FdEnt; MAX_FDS] = [FdEnt {
-    used: false, path: [0; 64], len: 0, off: 0,
-}; MAX_FDS];
-
-fn fd_alloc() -> Option<usize> {
-    // SAFETY: single-threaded syscall context.
-    unsafe {
-        FDS.iter().position(|f| !f.used)
-    }
-}
-
-fn fd_get(fd: u64) -> Option<&'static mut FdEnt> {
-    // SAFETY: index bounds-checked; syscall context is single-threaded.
-    unsafe {
-        let i = fd.checked_sub(3)? as usize;
-        if i < MAX_FDS && FDS[i].used { Some(&mut *core::ptr::addr_of_mut!(FDS[i])) } else { None }
-    }
-}
+/* ---- file syscalls for TrapSvc (fd table now per-process in main.rs) ---- */
 
 /// Global PS/2 keyboard for the syscall input path.
 static mut KBD: Option<kernel::ps2::Keyboard<Ps2Hw>> = None;
@@ -506,10 +477,14 @@ impl TrapSvc {
         if !exists {
             return -2; // ENOENT
         }
-        let Some(slot) = fd_alloc() else { return -24 }; // EMFILE
+        // Use per-process fd allocation.
+        let slot = match unsafe { crate::fd_alloc() } {
+            Some(s) => s,
+            None => return -24, // EMFILE
+        };
         // SAFETY: slot just allocated, single-threaded.
         unsafe {
-            let f = &mut *core::ptr::addr_of_mut!(FDS[slot]);
+            let f = crate::fd_get((slot as u64) + 3).unwrap();
             f.used = true;
             f.len = path_len as u32;
             f.off = 0;
@@ -532,7 +507,10 @@ impl TrapSvc {
                 None => -11, // EAGAIN
             };
         }
-        let Some(f) = fd_get(fd) else { return -9 }; // EBADF
+        let f = match unsafe { crate::fd_get(fd) } {
+            Some(f) => f,
+            None => return -9, // EBADF
+        };
         let path = match core::str::from_utf8(&f.path[..f.len as usize]) {
             Ok(s) => s,
             Err(_) => return -14,
@@ -557,7 +535,7 @@ impl TrapSvc {
     }
 
     fn sys_close(&mut self, fd: u64) -> i64 {
-        match fd_get(fd) {
+        match unsafe { crate::fd_get(fd) } {
             Some(f) => {
                 f.used = false;
                 0
