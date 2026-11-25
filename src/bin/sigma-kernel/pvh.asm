@@ -543,6 +543,102 @@ irq_lapic_eoi:
     mov $0x80b, %ecx
     wrmsr
 irq_done:
+    /* Preemptive scheduling: on timer IRQs (0x20 PIT / 0x30 LAPIC)
+     * interrupted from user mode (cs RPL==3), save the full user
+     * ctx into the current proc's slot, let Rust pick the next proc,
+     * then iretq into *its* ctx. Other IRQs take the normal path. */
+    mov irq_vec, %eax
+    cmp $0x20, %eax
+    je irq_sched
+    cmp $0x30, %eax
+    jne irq_restore
+irq_sched:
+    mov 128(%rsp), %eax        /* cs from the CPU iret frame */
+    test $3, %al
+    jz irq_restore             /* interrupted kernel code: no switch */
+    /* Save ctx: stack layout here is
+     * +0 r15 +8 r14 +16 r13 +24 r12 +32 r11 +40 r10 +48 r9 +56 r8
+     * +64 rbp +72 rbx +80 rdi +88 rsi +96 rdx +104 rcx +112 user_rax
+     * +120 rip +128 cs +136 rflags +144 user_sp +152 ss            */
+    movabs $cur_ctx, %r10
+    mov (%r10), %r10           /* r10 = current ctx (17->19 slots) */
+    mov 0(%rsp),%rax
+    mov %rax,104(%r10)         /* r15 */
+    mov 8(%rsp),%rax
+    mov %rax,96(%r10)          /* r14 */
+    mov 16(%rsp),%rax
+    mov %rax,88(%r10)          /* r13 */
+    mov 24(%rsp),%rax
+    mov %rax,80(%r10)          /* r12 */
+    mov 32(%rsp),%rax
+    mov %rax,144(%r10)         /* r11 -> slot 18 */
+    mov 40(%rsp),%rax
+    mov %rax,56(%r10)          /* r10 */
+    mov 48(%rsp),%rax
+    mov %rax,48(%r10)          /* r9 */
+    mov 56(%rsp),%rax
+    mov %rax,40(%r10)          /* r8 */
+    mov 64(%rsp),%rax
+    mov %rax,72(%r10)          /* rbp */
+    mov 72(%rsp),%rax
+    mov %rax,64(%r10)          /* rbx */
+    mov 80(%rsp),%rax
+    mov %rax,32(%r10)          /* rdi */
+    mov 88(%rsp),%rax
+    mov %rax,24(%r10)          /* rsi */
+    mov 96(%rsp),%rax
+    mov %rax,16(%r10)          /* rdx */
+    mov 104(%rsp),%rax
+    mov %rax,136(%r10)         /* rcx -> slot 17 */
+    mov 112(%rsp),%rax
+    mov %rax,(%r10)            /* user rax -> slot 0 */
+    mov 120(%rsp),%rax
+    mov %rax,8(%r10)           /* rip -> slot 1 */
+    mov 144(%rsp),%rax
+    mov %rax,112(%r10)         /* user_sp -> slot 14 */
+    mov 136(%rsp),%rax
+    mov %rax,120(%r10)         /* rflags -> slot 15 */
+    mov %cr3,%rax
+    mov %rax,128(%r10)         /* cr3 -> slot 16 */
+    /* sched_tick may use aligned SSE; save rsp, force 16-align */
+    movabs $irq_save_rsp, %rax
+    mov %rsp, (%rax)
+    and $-16, %rsp
+    call sched_tick            /* picks next proc, sets cur_ctx */
+    movabs $irq_save_rsp, %rax
+    mov (%rax), %rsp
+    /* Load target ctx via cur_ctx; rebuild the iret frame in place
+     * (add 120 drops the 14 saved regs + stub's user_rax). */
+    movabs $cur_ctx, %r11
+    mov (%r11), %r11           /* r11 = target ctx */
+    mov 128(%r11),%rax
+    mov %rax,%cr3
+    add $120, %rsp             /* -> CPU frame: rip cs rflags rsp ss */
+    mov 8(%r11),%rax
+    mov %rax,(%rsp)            /* rip */
+    movq $0x33,8(%rsp)         /* cs */
+    mov 120(%r11),%rax
+    mov %rax,16(%rsp)          /* rflags */
+    mov 112(%r11),%rax
+    mov %rax,24(%rsp)          /* user rsp */
+    movq $0x2b,32(%rsp)        /* ss */
+    mov 0(%r11),%rax
+    mov 16(%r11),%rdx
+    mov 24(%r11),%rsi
+    mov 32(%r11),%rdi
+    mov 40(%r11),%r8
+    mov 48(%r11),%r9
+    mov 56(%r11),%r10
+    mov 64(%r11),%rbx
+    mov 72(%r11),%rbp
+    mov 80(%r11),%r12
+    mov 88(%r11),%r13
+    mov 96(%r11),%r14
+    mov 104(%r11),%r15
+    mov 136(%r11),%rcx        /* saved rcx (slot 17) */
+    mov 144(%r11),%r11        /* saved r11 (slot 18), last */
+    iretq
+irq_restore:
     pop %r15
     pop %r14
     pop %r13
@@ -709,6 +805,7 @@ cur_ctx:    .quad 0
 next_ctx:   .quad 0
 switch_req: .quad 0
 tmp_r11:    .quad 0
+irq_save_rsp: .quad 0
 tick_ctr:   .quad 0
 irq_vec:    .long 0
 tss:       .skip 104

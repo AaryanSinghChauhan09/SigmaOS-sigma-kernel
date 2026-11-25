@@ -375,7 +375,7 @@ extern "C" {
     static mut switch_req: u64;
 }
 
-/// Max concurrent user processes (cooperative — one runs at a time).
+/// Max concurrent user processes (preemptive round-robin via timer IRQ).
 pub const NPROCS: usize = 4;
 
 /// ctx slot indices — must match pvh.asm syscall_entry layout.
@@ -397,10 +397,15 @@ mod cx {
     pub const SP: usize = 14;
     pub const FL: usize = 15;
     pub const CR3: usize = 16;
+    /// Slots 17/18 hold rcx/r11 saved by the IRQ preemption path
+    /// (syscall ctx derives them from rip/rflags instead).
+    pub const RCX: usize = 17;
+    pub const R11: usize = 18;
 }
 
-/// Per-process saved user context (17 u64s, asm layout above).
-static mut CTX: [[u64; 17]; NPROCS] = [[0; 17]; NPROCS];
+/// Per-process saved user context (19 u64s; slots 0-16 by syscall_entry,
+/// 17/18 rcx/r11 by the IRQ preemption path).
+static mut CTX: [[u64; 19]; NPROCS] = [[0; 19]; NPROCS];
 
 /// Process table entry — the Linux task_struct analogue, minimal.
 #[derive(Clone, Copy)]
@@ -435,6 +440,32 @@ unsafe fn switch_to(idx: usize) {
     cur_ctx = CTX[idx].as_mut_ptr() as u64;
     next_ctx = cur_ctx;
     switch_req = 1;
+}
+
+/// Timer-tick scheduler — called from `irq_common` on timer IRQs after
+/// the interrupted user ctx has been saved into the current proc's slot.
+/// Picks the next runnable process round-robin, swaps the per-process
+/// globals (pml4/brk), and points `cur_ctx` at the target ctx; the asm
+/// then loads that ctx and `iretq`s into it. With a single runnable
+/// process it returns the same ctx — a harmless self-reschedule.
+/// (Linux `scheduler_tick` + `context_switch` analogue.)
+#[no_mangle]
+pub extern "C" fn sched_tick() {
+    // SAFETY: single-CPU, IRQ-time context; PROCS/CTX are ours.
+    unsafe {
+        for off in 1..=NPROCS {
+            let i = (CUR_PROC + off) % NPROCS;
+            if PROCS[i].used && !PROCS[i].exited {
+                PROCS[CUR_PROC].pml4 = USER_PML4;
+                PROCS[CUR_PROC].brk = USER_BRK;
+                CUR_PROC = i;
+                USER_PML4 = PROCS[i].pml4;
+                USER_BRK = PROCS[i].brk;
+                cur_ctx = CTX[i].as_mut_ptr() as u64;
+                return;
+            }
+        }
+    }
 }
 
 /// Syscall trap entry — called from asm `syscall_entry` with the
