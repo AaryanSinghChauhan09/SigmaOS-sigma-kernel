@@ -3,4 +3,5 @@ rustflags = [
     "-C", "link-args=-Tlinker.ld",
     "-C", "link-args=-no-pie",
     "-C", "relocation-model=static",
+    "-C", "panic=abort",
 ]
