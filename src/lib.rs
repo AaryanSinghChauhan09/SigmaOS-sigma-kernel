@@ -16,6 +16,7 @@ pub mod elf;
 pub mod error;
 pub mod fb;
 pub mod mm;
+pub mod process;
 pub mod ps2;
 pub mod syscall;
 pub mod uart;
