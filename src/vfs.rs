@@ -20,15 +20,43 @@ pub struct VfsNode {
     pub children: BTreeMap<String, usize>,
 }
 
+/// A mounted filesystem backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FsKind {
+    /// In-memory initramfs (cpio newc).
+    Initramfs,
+    /// FAT32 on a block device.
+    Fat32,
+    /// Placeholder for future filesystems.
+    Other,
+}
+
+/// A mount entry: path -> filesystem kind + backing device id.
+#[derive(Debug, Clone)]
+pub struct MountEntry {
+    pub path: String,
+    pub kind: FsKind,
+    /// Block device index (for device-backed mounts; 0 = none).
+    pub dev: u32,
+}
+
 /// In-memory filesystem built from an initramfs archive.
 pub struct Vfs {
     nodes: Vec<VfsNode>,
     root: usize,
+    /// Active mounts keyed by mount path.
+    pub mounts: BTreeMap<String, MountEntry>,
 }
 
 impl Vfs {
     /// Create an empty VFS with a root directory.
     pub fn new() -> Self {
+        let mut mounts = BTreeMap::new();
+        mounts.insert("/".into(), MountEntry {
+            path: "/".into(),
+            kind: FsKind::Initramfs,
+            dev: 0,
+        });
         Self {
             nodes: vec![VfsNode {
                 name: "/".into(),
@@ -37,7 +65,42 @@ impl Vfs {
                 children: BTreeMap::new(),
             }],
             root: 0,
+            mounts,
         }
+    }
+
+    /// Mount a filesystem at `path`. Returns error if path is not a dir
+    /// or already mounted.
+    pub fn mount(&mut self, path: &str, kind: FsKind, dev: u32) -> Result<(), KernelError> {
+        let idx = self.lookup(path).ok_or(KernelError::Fs("mount point not found"))?;
+        if !self.nodes[idx].is_dir {
+            return Err(KernelError::Fs("mount point is not a directory"));
+        }
+        if self.mounts.contains_key(path) {
+            return Err(KernelError::Fs("already mounted"));
+        }
+        self.mounts.insert(path.to_string(), MountEntry {
+            path: path.to_string(),
+            kind,
+            dev,
+        });
+        Ok(())
+    }
+
+    /// Unmount the filesystem at `path`. Root cannot be unmounted.
+    pub fn umount(&mut self, path: &str) -> Result<(), KernelError> {
+        if path == "/" {
+            return Err(KernelError::Fs("cannot unmount root"));
+        }
+        if self.mounts.remove(path).is_none() {
+            return Err(KernelError::Fs("not mounted"));
+        }
+        Ok(())
+    }
+
+    /// Check if `path` is a mount point.
+    pub fn is_mount_point(&self, path: &str) -> bool {
+        self.mounts.contains_key(path)
     }
 
     /// Load a cpio newc archive into the VFS.
