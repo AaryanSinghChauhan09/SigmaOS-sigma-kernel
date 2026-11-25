@@ -123,3 +123,46 @@ impl kernel::usermem::PhysMem for IdentityPhysMem {
         unsafe { (phys as *const u64).read_volatile() }
     }
 }
+
+/* ---- KernelServices for syscall dispatch ---- */
+
+/// Bridges syscall::dispatch to real kernel services: console/serial
+/// output, pid, kernel version. `write` copies from the user buffer
+/// (identity-mapped in the user CR3) to serial+VGA.
+pub struct KernelSvc {
+    pub con: &'static mut kernel::console::TextConsole<VgaBuf>,
+}
+
+impl kernel::syscall::KernelServices for KernelSvc {
+    fn write(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
+        if fd != 1 && fd != 2 {
+            return -9; // EBADF
+        }
+        // SAFETY: ptr/len come from a user process whose pages are
+        // mapped in the active CR3; we trust the syscall ABI contract.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        for &b in bytes {
+            if b == b'\n' {
+                self.con.newline_pub();
+            } else {
+                self.con.put_byte(b);
+            }
+            // serial echo
+            let mut tmp = [0u8; 1];
+            tmp[0] = b;
+            log(core::str::from_utf8(&tmp).unwrap_or("?"));
+        }
+        len as i64
+    }
+    fn exit(&mut self, code: u64) -> ! {
+        log("sigma-kernel: user process exited\n");
+        self.con.println(&alloc::format!("process exit {}", code));
+        loop { core::hint::spin_loop() }
+    }
+    fn pid(&self) -> u64 {
+        1 // single-process kernel for now
+    }
+    fn kernel_version(&self) -> &'static str {
+        kernel::KERNEL_VERSION
+    }
+}
