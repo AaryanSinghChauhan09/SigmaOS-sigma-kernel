@@ -248,6 +248,52 @@ pub fn build_user_tables(
     Ok(UserTables { cr3: pml4, pages: tables })
 }
 
+/// Map a single 4K user page `vaddr`->`phys` into an existing user
+/// CR3, allocating/splitting page-table levels as needed.
+///
+/// If the covering PD entry is a 2 MiB supervisor page it is split
+/// into a PT of 512 supervisor 4K entries first (leaves keep
+/// supervisor-only flags so user access still faults there).
+/// Modeled on Linux `pmd_install` + `pte_alloc_one`.
+pub fn map_user_page(
+    pml4: u64,
+    vaddr: u64,
+    phys: u64,
+    alloc: &mut FrameAllocator,
+    phys_mem: &mut dyn PhysMem,
+) -> Result<(), KernelError> {
+    let (_, _, mi, ti) = indices(vaddr);
+    let pd = ensure_pd(vaddr, pml4, alloc, phys_mem)?;
+
+    // PD[mi]: 2 MiB supervisor page -> split into a PT.
+    let mut pd_e = get_entry(phys_mem, pd, mi);
+    if pd_e & P_PRESENT == 0 {
+        let pt_t = alloc_table(alloc)?;
+        pd_e = pt_t.phys | P_PRESENT | P_WRITE | P_USER;
+        set_entry(phys_mem, pd, mi, pd_e);
+    } else if pd_e & P_PS != 0 {
+        let slot_base = (pd_e & !0xfff) & !((2 << 20) - 1);
+        let pt_t = alloc_table(alloc)?;
+        for i in 0..PT_ENTRIES {
+            let leaf = (slot_base + i as u64 * FRAME)
+                | P_PRESENT
+                | P_WRITE;
+            set_entry(phys_mem, pt_t.phys, i, leaf);
+        }
+        pd_e = pt_t.phys | P_PRESENT | P_WRITE | P_USER;
+        set_entry(phys_mem, pd, mi, pd_e);
+    }
+    let pt = pd_e & !0xfff;
+
+    set_entry(
+        phys_mem,
+        pt,
+        ti,
+        (phys & !0xfff) | P_PRESENT | P_WRITE | P_USER,
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +313,34 @@ use alloc::vec;
         fn read_u64(&self, phys: u64) -> u64 {
             *self.map.get(&phys).unwrap_or(&0)
         }
+    }
+
+    #[test]
+    fn map_user_page_splits_supervisor_slot() {
+        let mut alloc = test_alloc();
+        let mut mem = MockMem { map: HashMap::new() };
+        // Minimal CR3: PML4[0]->PDPT->PD with one supervisor 2MiB slot.
+        let pml4 = alloc.alloc_frame().unwrap();
+        mem.write_u64(pml4, 0); // PML4[0] empty for now
+        // Build via build_user_tables with no user pages.
+        let t = build_user_tables(&[], 0x200000, &mut alloc, &mut mem).unwrap();
+        // vaddr 0x300000 is inside a supervisor 2MiB slot (< kernel_top? no,
+        // kernel_top=0x200000 so slot 0x200000..0x400000 IS kernel).
+        // Use 0x800000 (slot 0x800000, supervisor identity).
+        let phys = alloc.alloc_frame().unwrap();
+        map_user_page(t.cr3, 0x800000, phys, &mut alloc, &mut mem).unwrap();
+        // Walk: PML4[0]->PDPT[0]->PD[mi=4]->PT[ti=0] should be present+user.
+        let pdpt = mem.read_u64(t.cr3);
+        let pd = mem.read_u64(pdpt & !0xfff);
+        let mi = (0x800000usize >> 21) & 0x1ff;
+        let pde = mem.read_u64((pd & !0xfff) + mi as u64 * 8);
+        assert_ne!(pde & P_PRESENT, 0);
+        assert_eq!(pde & P_PS, 0, "slot should now be a PT, not 2MiB page");
+        let pt = pde & !0xfff;
+        let ti = (0x800000usize >> 12) & 0x1ff;
+        let pte = mem.read_u64(pt + ti as u64 * 8);
+        assert_ne!(pte & (P_PRESENT | P_WRITE | P_USER), 0);
+        assert_eq!(pte & !0xfff, phys & !0xfff);
     }
 
     fn test_alloc() -> FrameAllocator {

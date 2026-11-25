@@ -51,6 +51,22 @@ pub fn halt() {
     }
 }
 
+/// Reload CR3 to flush the TLB and paging-structure caches.
+/// Required after installing new page-table entries: a prior walk
+/// may have cached a non-present translation (Linux does the same
+/// via flush_tlb_* after pte_install).
+pub fn flush_tlb() {
+    // SAFETY: mov cr3,rAX;mov cr3,rAX is the canonical full flush.
+    unsafe {
+        core::arch::asm!(
+            "mov rax, cr3",
+            "mov cr3, rax",
+            out("rax") _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 /// Read %eax and %rbx/%ebx at entry.
 ///
 #[allow(dead_code)]
@@ -241,6 +257,109 @@ impl kernel::syscall::KernelServices for TrapSvc {
             }
         }
         n as i64
+    }
+
+    /* BRK/MMAP: grow the user break by mapping fresh 4K frames into
+     * the live user CR3 via usermem::map_user_page (splits 2MiB
+     * supervisor slots on demand). Modeled on Linux sys_brk/sys_mmap
+     * anonymous path. */
+    fn brk(&mut self, addr: u64) -> i64 {
+        const PAGE: u64 = 4096;
+        const ENOMEM: i64 = -12;
+        const EINVAL: i64 = -22;
+        unsafe {
+            let cur = crate::USER_BRK;
+            if addr == 0 {
+                return cur as i64;
+            }
+            if addr < cur {
+                // Shrink: just move the break; pages stay mapped.
+                crate::USER_BRK = addr;
+                return addr as i64;
+            }
+            if addr - cur > 64 << 20 {
+                return EINVAL; // refuse >64MiB single grow
+            }
+            let pml4 = crate::USER_PML4;
+            let end = (addr + PAGE - 1) & !(PAGE - 1);
+            let mut v = cur & !(PAGE - 1);
+            while v < end {
+                let phys = match crate::USER_ALLOC
+                    .as_mut()
+                    .and_then(|a| a.alloc_frame())
+                {
+                    Some(p) => p,
+                    None => return ENOMEM,
+                };
+                // SAFETY: phys is a freshly allocated frame we own;
+                // identity-mapped, so direct zeroing is valid.
+                unsafe { core::ptr::write_bytes(phys as *mut u8, 0, 4096) };
+                let r = kernel::usermem::map_user_page(
+                    pml4,
+                    v,
+                    phys,
+                    crate::USER_ALLOC.as_mut().unwrap(),
+                    &mut IdentityPhysMem,
+                );
+                if r.is_err() {
+                    return ENOMEM;
+                }
+                v += PAGE;
+            }
+            crate::USER_BRK = end;
+            flush_tlb();
+            end as i64
+        }
+    }
+
+    fn mmap(&mut self, addr: u64, len: u64) -> i64 {
+        const PAGE: u64 = 4096;
+        const ENOMEM: i64 = -12;
+        const EINVAL: i64 = -22;
+        if len == 0 || len > (256 << 20) {
+            return EINVAL;
+        }
+        unsafe {
+            // addr==0: allocate from a private mmap arena just above brk.
+            let base = if addr == 0 {
+                let b = crate::USER_BRK;
+                crate::USER_BRK = (b + len + PAGE - 1) & !(PAGE - 1);
+                b & !(PAGE - 1)
+            } else {
+                if addr & (PAGE - 1) != 0 {
+                    return EINVAL;
+                }
+                addr
+            };
+            let pml4 = crate::USER_PML4;
+            let end = (base + len + PAGE - 1) & !(PAGE - 1);
+            let mut v = base;
+            while v < end {
+                let phys = match crate::USER_ALLOC
+                    .as_mut()
+                    .and_then(|a| a.alloc_frame())
+                {
+                    Some(p) => p,
+                    None => return ENOMEM,
+                };
+                // SAFETY: phys is a freshly allocated frame we own;
+                // identity-mapped, so direct zeroing is valid.
+                unsafe { core::ptr::write_bytes(phys as *mut u8, 0, 4096) };
+                let r = kernel::usermem::map_user_page(
+                    pml4,
+                    v,
+                    phys,
+                    crate::USER_ALLOC.as_mut().unwrap(),
+                    &mut IdentityPhysMem,
+                );
+                if r.is_err() {
+                    return ENOMEM;
+                }
+                v += PAGE;
+            }
+            flush_tlb();
+            base as i64
+        }
     }
 }
 
@@ -434,4 +553,5 @@ impl TrapSvc {
         }
         n as i64
     }
+
 }

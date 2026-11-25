@@ -346,6 +346,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 /// Global VFS — populated at boot, shared with the syscall layer.
 static mut VFS: Option<kernel::vfs::Vfs> = None;
 
+/// User-process memory state for BRK/MMAP syscalls.
+pub static mut USER_PML4: u64 = 0;
+pub static mut USER_ALLOC: Option<kernel::mm::FrameAllocator> = None;
+pub static mut USER_BRK: u64 = 0x10000000; // 256 MiB, above image+stack
+
 /// Global VGA console for syscall output.
 static mut CON: Option<kernel::console::TextConsole<arch::VgaBuf>> = None;
 
@@ -485,6 +490,11 @@ fn run_init(
         }
     }
 
+    unsafe {
+        USER_PML4 = tables.cr3;
+        USER_ALLOC = Some(alloc);
+        USER_BRK = 0x10000000;
+    }
     con.println("entering /init (ring 3)...");
     arch::log("sigma-kernel: entering user mode\n");
     unsafe {

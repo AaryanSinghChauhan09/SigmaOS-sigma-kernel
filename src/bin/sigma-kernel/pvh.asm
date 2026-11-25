@@ -249,8 +249,21 @@ isr\n:
     mov $\n, %eax
     jmp isr_common
 .endm
-.irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63
+.irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
 ISR \n
+.endr
+
+/* ---- IRQ stubs (vectors >= 32): must preserve user rax, which
+ * `mov $vec,%eax` would otherwise destroy. Save rax first, load
+ * the vector, jump to irq_common which restores rax before iretq. */
+.macro ISR_IRQ n
+isr\n:
+    push %rax
+    mov $\n, %eax
+    jmp irq_common
+.endm
+.irp n,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63
+ISR_IRQ \n
 .endr
 
 /* cl = char -> COM1 (polls THR-empty) */
@@ -486,6 +499,67 @@ isr_common:
     iretq
     jmp 6b
 
+/* IRQ common handler — entered from ISR_IRQ stubs (vec >= 32) with
+ * eax = vector and user rax already saved on the stack by the stub.
+ * Stack at entry: [user_rax][rip][cs][rflags][rsp][ss].
+ * Saves the other 14 GPRs, counts ticks, EOI, restores everything
+ * (including user rax), iretq back to the interrupted context. */
+irq_common:
+    cli
+    mov %eax, irq_vec
+    push %rcx
+    push %rdx
+    push %rsi
+    push %rdi
+    push %rbx
+    push %rbp
+    push %r8
+    push %r9
+    push %r10
+    push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    movabs $tick_ctr, %r10
+    incq (%r10)
+irq_eoi:
+    mov irq_vec, %eax        /* vector for EOI routing */
+    cmp $0x30, %eax          /* LAPIC timer -> x2APIC EOI MSR */
+    je irq_lapic_eoi
+    mov $0x20, %al           /* master PIC EOI (al=0x20, ah=0) */
+    mov $0x20, %dx
+    out %al, %dx
+    mov irq_vec, %eax        /* reload: al was clobbered above */
+    cmp $0x28, %eax          /* slave IRQs need slave+master EOI */
+    jb irq_done
+    mov $0x20, %al
+    mov $0xa0, %dx
+    out %al, %dx
+    jmp irq_done
+irq_lapic_eoi:
+    xor %eax, %eax
+    xor %edx, %edx
+    mov $0x80b, %ecx
+    wrmsr
+irq_done:
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %r11
+    pop %r10
+    pop %r9
+    pop %r8
+    pop %rbp
+    pop %rbx
+    pop %rdi
+    pop %rsi
+    pop %rdx
+    pop %rcx
+    pop %rax                 /* user rax saved by the ISR_IRQ stub */
+    iretq
+
 /* Xen ELF note: entry type 18 = XEN_ELFNOTE_PHYS32_ENTRY */
 .section .note.Xen,"a"
 .align 4
@@ -585,6 +659,15 @@ syscall_entry:
     mov user_sp, %rsp
     mov sf_rcx, %rcx
     mov sf_r11, %r11
+    /* Restore every user arg register — syscall_trap clobbered
+     * them and sysret does not. Without this, userspace sees
+     * garbage in rdi/rsi/rdx/r10/r8/r9 after every syscall. */
+    mov sf_rdi, %rdi
+    mov sf_rsi, %rsi
+    mov sf_rdx, %rdx
+    mov sf_r10, %r10
+    mov sf_r8,  %r8
+    mov sf_r9,  %r9
     sysretq
 
 .section .bss

@@ -80,6 +80,11 @@ pub trait KernelServices {
     fn time(&mut self) -> i64 { ENOSYS }
     /// Fill user `ptr` with `len` random bytes; returns len.
     fn rand(&mut self, _ptr: u64, _len: u64) -> i64 { ENOSYS }
+    /// Extend/reduce the program break; `addr`=0 queries current.
+    /// Returns new break or -errno.
+    fn brk(&mut self, _addr: u64) -> i64 { ENOSYS }
+    /// Map `len` anonymous bytes at `addr` (0 = pick); returns addr/-errno.
+    fn mmap(&mut self, _addr: u64, _len: u64) -> i64 { ENOSYS }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -109,6 +114,8 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::KERNEL_INFO => svc.kernel_info(args[0], args[1]),
         nr::TIME => svc.time(),
         nr::RAND => svc.rand(args[0], args[1]),
+        nr::BRK => svc.brk(args[0]),
+        nr::MMAP => svc.mmap(args[0], args[1]),
         nr::GETPID | nr::GETTID => svc.pid() as i64,
         nr::KERNEL_INFO => {
             // return (ptr,len) packed: caller reads version via ptr
