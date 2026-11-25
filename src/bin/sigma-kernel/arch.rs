@@ -361,6 +361,46 @@ impl kernel::syscall::KernelServices for TrapSvc {
             base as i64
         }
     }
+
+    /* MUNMAP: clear present U/S leaf PTEs and return their frames
+     * to the allocator. Supervisor/kernel pages are never touched —
+     * user_pte only yields 4K leaves and we additionally require
+     * P_USER before freeing (Linux unmap_region semantics). */
+    fn munmap(&mut self, addr: u64, len: u64) -> i64 {
+        const PAGE: u64 = 4096;
+        const EINVAL: i64 = -22;
+        if len == 0 || addr & (PAGE - 1) != 0 {
+            return EINVAL;
+        }
+        let end = match addr.checked_add(len) {
+            Some(e) => e,
+            None => return EINVAL,
+        };
+        if end > (512 << 20) {
+            return EINVAL; // stay inside the low user half we manage
+        }
+        unsafe {
+            let pml4 = crate::USER_PML4;
+            let mut v = addr;
+            while v < end {
+                if let Some((pte, e)) =
+                    kernel::usermem::user_pte(pml4, v, &IdentityPhysMem)
+                {
+                    if e & kernel::usermem::P_USER != 0 {
+                        kernel::usermem::PhysMem::write_u64(
+                            &mut IdentityPhysMem, pte, 0,
+                        );
+                        if let Some(a) = crate::USER_ALLOC.as_mut() {
+                            a.free_frame(e & !0xfff);
+                        }
+                    }
+                }
+                v += PAGE;
+            }
+            flush_tlb();
+        }
+        0
+    }
 }
 
 static mut RSEED: u64 = 0;

@@ -294,6 +294,38 @@ pub fn map_user_page(
     Ok(())
 }
 
+/// Walk a user CR3 for `vaddr` and return `(pte_slot_phys, entry)`
+/// for a present 4K leaf, or `None` when any level is absent, the
+/// covering PD entry is a 2 MiB supervisor page, or the leaf itself
+/// is not present. Used by MUNMAP — callers must check `P_USER`
+/// before freeing so supervisor/kernel pages are never released.
+pub fn user_pte(
+    pml4: u64,
+    vaddr: u64,
+    phys_mem: &dyn PhysMem,
+) -> Option<(u64, u64)> {
+    let (pi, di, mi, ti) = indices(vaddr);
+    let pdpt_e = get_entry(phys_mem, pml4, pi);
+    if pdpt_e & P_PRESENT == 0 {
+        return None;
+    }
+    let pd_e = get_entry(phys_mem, pdpt_e & !0xfff, di);
+    if pd_e & P_PRESENT == 0 {
+        return None;
+    }
+    // PD[mi]: 2 MiB supervisor page -> not a 4K user leaf.
+    let pde = get_entry(phys_mem, pd_e & !0xfff, mi);
+    if pde & P_PRESENT == 0 || pde & P_PS != 0 {
+        return None;
+    }
+    let pte_addr = (pde & !0xfff) + ti as u64 * 8;
+    let e = phys_mem.read_u64(pte_addr);
+    if e & P_PRESENT == 0 {
+        return None;
+    }
+    Some((pte_addr, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +373,27 @@ use alloc::vec;
         let pte = mem.read_u64(pt + ti as u64 * 8);
         assert_ne!(pte & (P_PRESENT | P_WRITE | P_USER), 0);
         assert_eq!(pte & !0xfff, phys & !0xfff);
+    }
+
+    #[test]
+    fn user_pte_finds_only_user_leaves() {
+        let mut alloc = test_alloc();
+        let mut mem = MockMem { map: HashMap::new() };
+        let t = build_user_tables(&[], 0x200000, &mut alloc, &mut mem).unwrap();
+        let phys = alloc.alloc_frame().unwrap();
+        map_user_page(t.cr3, 0x800000, phys, &mut alloc, &mut mem).unwrap();
+
+        // Present user leaf -> Some with U/S set.
+        let (slot, e) = user_pte(t.cr3, 0x800000, &mem).unwrap();
+        assert_ne!(e & P_USER, 0);
+        assert_eq!(e & !0xfff, phys & !0xfff);
+        // Clearing through the returned slot makes it absent.
+        mem.write_u64(slot, 0);
+        assert!(user_pte(t.cr3, 0x800000, &mem).is_none());
+        // Vaddr in a different, untouched supervisor 2MiB slot -> None.
+        assert!(user_pte(t.cr3, 0xA00000, &mem).is_none());
+        // Kernel identity slot -> None (never a user leaf).
+        assert!(user_pte(t.cr3, 0x100000, &mem).is_none());
     }
 
     fn test_alloc() -> FrameAllocator {
