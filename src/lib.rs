@@ -17,6 +17,7 @@ pub mod error;
 pub mod fat32;
 pub mod fb;
 pub mod fb_console;
+pub mod installer;
 pub mod mm;
 pub mod process;
 pub mod ps2;
