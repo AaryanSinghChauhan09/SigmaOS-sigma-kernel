@@ -135,6 +135,26 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
                 if let Some(init) = vfs.read("/init") {
                     arch::log(&alloc::format!("sigma-kernel: /init present ({} bytes)\n", init.len()));
                     con.println(&alloc::format!("/init: {} bytes", init.len()));
+                    // Probe ELF header — reports entry + load segments.
+                    match kernel::elf::parse_header(init)
+                        .and_then(|h| kernel::elf::load_segments(init, &h).map(|s| (h, s)))
+                    {
+                        Ok((h, segs)) => {
+                            let (lo, hi) = kernel::elf::image_span(&segs);
+                            arch::log(&alloc::format!(
+                                "sigma-kernel: /init ELF entry={:#x} span={:#x}..{:#x} segs={}\n",
+                                h.entry, lo, hi, segs.len()
+                            ));
+                            con.println(&alloc::format!(
+                                "/init ELF: entry {:#x}, {} segs",
+                                h.entry, segs.len()
+                            ));
+                        }
+                        Err(e) => {
+                            arch::log(&alloc::format!("sigma-kernel: /init not ELF: {:?}\n", e));
+                            con.println("/init: not a loadable ELF");
+                        }
+                    }
                 }
             }
             Err(e) => {

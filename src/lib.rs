@@ -12,6 +12,7 @@ extern crate alloc;
 pub mod boot;
 pub mod compositor;
 pub mod console;
+pub mod elf;
 pub mod error;
 pub mod fb;
 pub mod mm;
