@@ -210,6 +210,51 @@ impl kernel::syscall::KernelServices for TrapSvc {
     fn listdir(&mut self, p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
         self.sys_listdir(p_ptr, p_len, b_ptr, b_len)
     }
+    fn kernel_info(&mut self, ptr: u64, len: u64) -> i64 {
+        let v = kernel::KERNEL_VERSION.as_bytes();
+        let n = (v.len()).min(len as usize);
+        // SAFETY: user buf mapped under active CR3.
+        unsafe {
+            core::ptr::copy_nonoverlapping(v.as_ptr(), ptr as *mut u8, n);
+        }
+        n as i64
+    }
+    fn time(&mut self) -> i64 {
+        rdtsc() as i64
+    }
+    fn rand(&mut self, ptr: u64, len: u64) -> i64 {
+        // xorshift64* PRNG seeded from rdtsc
+        let mut x = unsafe { RSEED };
+        if x == 0 {
+            x = rdtsc() | 1;
+        }
+        let n = (len as usize).min(1 << 20);
+        // SAFETY: user buf mapped; n bounded.
+        unsafe {
+            let out = core::slice::from_raw_parts_mut(ptr as *mut u8, n);
+            for b in out.iter_mut() {
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                unsafe { RSEED = x };
+                *b = (x.wrapping_mul(0x2545F4914F6CDD1D) >> 56) as u8;
+            }
+        }
+        n as i64
+    }
+}
+
+static mut RSEED: u64 = 0;
+
+/// Read the TSC (timestamp counter).
+pub fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    // SAFETY: rdtsc is always available on x86_64.
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack));
+    }
+    ((hi as u64) << 32) | lo as u64
 }
 
 /* ---- fd table + file syscalls for TrapSvc ---- */

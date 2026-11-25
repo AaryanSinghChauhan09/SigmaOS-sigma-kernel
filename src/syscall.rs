@@ -36,8 +36,8 @@ pub const ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "r10", "r8", "r9"];
 pub fn arity(nr: u64) -> usize {
     match nr {
         nr::READ | nr::WRITE | nr::OPEN | nr::STAT | nr::SPAWN | nr::WAIT => 3,
-        nr::CLOSE | nr::EXIT | nr::GETPID | nr::GETTID | nr::FB_FLUSH | nr::TIME
-        | nr::RAND | nr::KERNEL_INFO => 0,
+        nr::CLOSE | nr::EXIT | nr::GETPID | nr::GETTID | nr::FB_FLUSH | nr::TIME => 0,
+        nr::RAND | nr::KERNEL_INFO => 2,
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
         nr::FB_INFO => 1,
@@ -74,6 +74,12 @@ pub trait KernelServices {
     /// List directory `path` (ptr+len) into user `buf` (ptr+len).
     /// Returns bytes written or -errno.
     fn listdir(&mut self, _p_ptr: u64, _p_len: u64, _b_ptr: u64, _b_len: u64) -> i64 { ENOSYS }
+    /// Copy kernel version into user `ptr` (up to `len`); returns len.
+    fn kernel_info(&mut self, _ptr: u64, _len: u64) -> i64 { ENOSYS }
+    /// Monotonic time (ticks).
+    fn time(&mut self) -> i64 { ENOSYS }
+    /// Fill user `ptr` with `len` random bytes; returns len.
+    fn rand(&mut self, _ptr: u64, _len: u64) -> i64 { ENOSYS }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -100,6 +106,9 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::READ => svc.read(args[0], args[1], args[2]),
         nr::CLOSE => svc.close(args[0]),
         nr::LISTDIR => svc.listdir(args[0], args[1], args[2], args[3]),
+        nr::KERNEL_INFO => svc.kernel_info(args[0], args[1]),
+        nr::TIME => svc.time(),
+        nr::RAND => svc.rand(args[0], args[1]),
         nr::GETPID | nr::GETTID => svc.pid() as i64,
         nr::KERNEL_INFO => {
             // return (ptr,len) packed: caller reads version via ptr
