@@ -14,6 +14,7 @@ pub mod compositor;
 pub mod console;
 pub mod elf;
 pub mod error;
+pub mod fat32;
 pub mod fb;
 pub mod mm;
 pub mod process;
