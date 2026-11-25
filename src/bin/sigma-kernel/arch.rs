@@ -181,6 +181,24 @@ impl kernel::syscall::KernelServices for KernelSvc {
     fn kernel_version(&self) -> &'static str {
         kernel::KERNEL_VERSION
     }
+    fn fork(&mut self) -> i64 {
+        // Simplified fork: return ENOSYS for now
+        // Full implementation requires:
+        // 1. Copy current process's page tables (COW if possible)
+        // 2. Allocate new process slot
+        // 3. Copy register state
+        // 4. Return child pid in parent, 0 in child
+        -38 // ENOSYS
+    }
+    fn exec(&mut self, _path_ptr: u64, _path_len: u64, _argv_ptr: u64, _argv_len: u64, _envp_ptr: u64, _envp_len: u64) -> i64 {
+        // Simplified exec: return ENOSYS for now
+        // Full implementation requires:
+        // 1. Load ELF from path
+        // 2. Replace current address space
+        // 3. Set up new stack and argv/envp
+        // 4. Jump to new entry point
+        -38 // ENOSYS
+    }
 }
 
 /// Minimal KernelServices for the syscall trap path — serial-only
@@ -238,34 +256,24 @@ impl kernel::syscall::KernelServices for TrapSvc {
         }
         n as i64
     }
-    fn time(&mut self) -> i64 {
-        rdtsc() as i64
+    fn fork(&mut self) -> i64 {
+        // Simplified fork: return ENOSYS for now
+        // Full implementation requires:
+        // 1. Copy current process's page tables (COW if possible)
+        // 2. Allocate new process slot
+        // 3. Copy register state
+        // 4. Return child pid in parent, 0 in child
+        -38 // ENOSYS
     }
-    fn rand(&mut self, ptr: u64, len: u64) -> i64 {
-        // xorshift64* PRNG seeded from rdtsc
-        let mut x = unsafe { RSEED };
-        if x == 0 {
-            x = rdtsc() | 1;
-        }
-        let n = (len as usize).min(1 << 20);
-        // SAFETY: user buf mapped; n bounded.
-        unsafe {
-            let out = core::slice::from_raw_parts_mut(ptr as *mut u8, n);
-            for b in out.iter_mut() {
-                x ^= x >> 12;
-                x ^= x << 25;
-                x ^= x >> 27;
-                unsafe { RSEED = x };
-                *b = (x.wrapping_mul(0x2545F4914F6CDD1D) >> 56) as u8;
-            }
-        }
-        n as i64
+    fn exec(&mut self, _path_ptr: u64, _path_len: u64, _argv_ptr: u64, _argv_len: u64, _envp_ptr: u64, _envp_len: u64) -> i64 {
+        // Simplified exec: return ENOSYS for now
+        // Full implementation requires:
+        // 1. Load ELF from path
+        // 2. Replace current address space
+        // 3. Set up new stack and argv/envp
+        // 4. Jump to new entry point
+        -38 // ENOSYS
     }
-
-    /* BRK/MMAP: grow the user break by mapping fresh 4K frames into
-     * the live user CR3 via usermem::map_user_page (splits 2MiB
-     * supervisor slots on demand). Modeled on Linux sys_brk/sys_mmap
-     * anonymous path. */
     fn brk(&mut self, addr: u64) -> i64 {
         const PAGE: u64 = 4096;
         const ENOMEM: i64 = -12;
@@ -313,6 +321,29 @@ impl kernel::syscall::KernelServices for TrapSvc {
             flush_tlb();
             end as i64
         }
+    }
+    fn time(&mut self) -> i64 {
+        rdtsc() as i64
+    }
+    fn rand(&mut self, ptr: u64, len: u64) -> i64 {
+        // xorshift64* PRNG seeded from rdtsc
+        let mut x = unsafe { RSEED };
+        if x == 0 {
+            x = rdtsc() | 1;
+        }
+        let n = (len as usize).min(1 << 20);
+        // SAFETY: user buf mapped; n bounded.
+        unsafe {
+            let out = core::slice::from_raw_parts_mut(ptr as *mut u8, n);
+            for b in out.iter_mut() {
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                unsafe { RSEED = x };
+                *b = (x.wrapping_mul(0x2545F4914F6CDD1D) >> 56) as u8;
+            }
+        }
+        n as i64
     }
 
     fn mmap(&mut self, addr: u64, len: u64) -> i64 {

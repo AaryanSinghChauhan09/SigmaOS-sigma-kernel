@@ -26,7 +26,9 @@ pub mod nr {
     pub const TIME: u64 = 18;
     pub const RAND: u64 = 19;
     pub const LISTDIR: u64 = 20;
-    pub const MAX: u64 = 21;
+    pub const FORK: u64 = 21;
+    pub const EXEC: u64 = 22;
+    pub const MAX: u64 = 23;
 }
 
 /// Syscall argument registers in order.
@@ -36,13 +38,14 @@ pub const ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "r10", "r8", "r9"];
 pub fn arity(nr: u64) -> usize {
     match nr {
         nr::READ | nr::WRITE | nr::OPEN | nr::STAT | nr::SPAWN | nr::WAIT => 3,
-        nr::CLOSE | nr::EXIT | nr::GETPID | nr::GETTID | nr::FB_FLUSH | nr::TIME => 0,
+        nr::CLOSE | nr::EXIT | nr::GETPID | nr::GETTID | nr::FB_FLUSH | nr::TIME | nr::FORK => 0,
         nr::RAND | nr::KERNEL_INFO => 2,
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
         nr::FB_INFO => 1,
         nr::LISTDIR => 4,
         nr::FB_PUTPIXEL => 4,
+        nr::EXEC => 3,
         _ => 0,
     }
 }
@@ -87,6 +90,11 @@ pub trait KernelServices {
     fn mmap(&mut self, _addr: u64, _len: u64) -> i64 { ENOSYS }
     /// Unmap `len` bytes at `addr`; returns 0/-errno.
     fn munmap(&mut self, _addr: u64, _len: u64) -> i64 { ENOSYS }
+    /// Fork current process; returns child pid in parent, 0 in child, -errno on error.
+    fn fork(&mut self) -> i64 { ENOSYS }
+    /// Exec new program at `path` (ptr+len) with `argv` (ptr+len) and `envp` (ptr+len).
+    /// Does not return on success; returns -errno on error.
+    fn exec(&mut self, _path_ptr: u64, _path_len: u64, _argv_ptr: u64, _argv_len: u64, _envp_ptr: u64, _envp_len: u64) -> i64 { ENOSYS }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -120,6 +128,8 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::MMAP => svc.mmap(args[0], args[1]),
         nr::MUNMAP => svc.munmap(args[0], args[1]),
         nr::GETPID | nr::GETTID => svc.pid() as i64,
+        nr::FORK => svc.fork(),
+        nr::EXEC => svc.exec(args[0], args[1], args[2], args[3], args[4], args[5]),
         nr::KERNEL_INFO => {
             // return (ptr,len) packed: caller reads version via ptr
             let v = svc.kernel_version();
