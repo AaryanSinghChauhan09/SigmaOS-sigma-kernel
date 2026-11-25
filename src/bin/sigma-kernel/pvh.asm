@@ -278,10 +278,13 @@ isr_common:
 .section .data
 .align 8
 pvh_gdt:
-    .quad 0                    /* null */
+    .quad 0                    /* 0x00: null */
     .quad 0x00cf9a000000ffff   /* 0x08: 32-bit code, base 0, 4 GiB */
     .quad 0x00cf92000000ffff   /* 0x10: 32-bit data */
-    .quad 0x00af9a000000ffff   /* 0x18: 64-bit code, L=1 */
+    .quad 0x00af9a000000ffff   /* 0x18: 64-bit kernel code, L=1, DPL=0 */
+    .quad 0x00af92000000ffff   /* 0x20: 64-bit kernel data, DPL=0 */
+    .quad 0x00affa000000ffff   /* 0x28: 64-bit user code, L=1, DPL=3 */
+    .quad 0x00cff2000000ffff   /* 0x30: 64-bit user data, DPL=3 */
 pvh_gdt_end:
 pvh_gdt_ptr:
     .word pvh_gdt_end - pvh_gdt - 1
