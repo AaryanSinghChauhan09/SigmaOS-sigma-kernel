@@ -204,6 +204,9 @@ impl kernel::syscall::KernelServices for TrapSvc {
     fn close(&mut self, fd: u64) -> i64 {
         self.sys_close(fd)
     }
+    fn listdir(&mut self, p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
+        self.sys_listdir(p_ptr, p_len, b_ptr, b_len)
+    }
 }
 
 /* ---- fd table + file syscalls for TrapSvc ---- */
@@ -235,6 +238,35 @@ fn fd_get(fd: u64) -> Option<&'static mut FdEnt> {
         let i = fd.checked_sub(3)? as usize;
         if i < MAX_FDS && FDS[i].used { Some(&mut *core::ptr::addr_of_mut!(FDS[i])) } else { None }
     }
+}
+
+/// Global PS/2 keyboard for the syscall input path.
+static mut KBD: Option<kernel::ps2::Keyboard<Ps2Hw>> = None;
+
+fn kbd() -> &'static mut kernel::ps2::Keyboard<Ps2Hw> {
+    // SAFETY: single-threaded syscall context; lazy init once.
+    unsafe {
+        if KBD.is_none() {
+            KBD = Some(kernel::ps2::Keyboard::new(Ps2Hw));
+        }
+        KBD.as_mut().unwrap()
+    }
+}
+
+/// Read one key as a byte (Char->ascii, Enter->'\n', Backspace->0x7f).
+/// None if no key pending.
+fn kbd_read_byte() -> Option<u8> {
+    let k = kbd();
+    k.poll();
+    for ev in k.drain() {
+        match ev {
+            kernel::ps2::Key::Char(c) => return Some(c),
+            kernel::ps2::Key::Enter => return Some(b'\n'),
+            kernel::ps2::Key::Backspace => return Some(0x7f),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Read one byte from the 16550 RX (nonblocking). None if empty.
@@ -279,8 +311,9 @@ impl TrapSvc {
     /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file at offset.
     fn sys_read(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
         if fd == 0 {
-            // nonblocking serial: return 1 byte or EAGAIN
-            return match serial_read_byte() {
+            // console input: PS/2 keyboard, then serial RX
+            let byte = kbd_read_byte().or_else(serial_read_byte);
+            return match byte {
                 Some(b) => {
                     // SAFETY: user buf mapped.
                     unsafe { *(ptr as *mut u8) = b };
@@ -321,5 +354,36 @@ impl TrapSvc {
             }
             None => -9,
         }
+    }
+}
+
+impl TrapSvc {
+    /// listdir(path_ptr,path_len,buf_ptr,buf_len): newline-joined names.
+    fn sys_listdir(&mut self, p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
+        if p_len == 0 || p_len > 64 || b_len == 0 {
+            return -22;
+        }
+        // SAFETY: user buffers mapped under active CR3.
+        let pb = unsafe { core::slice::from_raw_parts(p_ptr as *const u8, p_len as usize) };
+        let path = match core::str::from_utf8(pb) {
+            Ok(s) => s,
+            Err(_) => return -14,
+        };
+        let names = unsafe { crate::sys_vfs() }.list(path);
+        let Some(names) = names else { return -2 }; // ENOENT
+        // join with '\n'
+        let mut out = alloc::string::String::new();
+        for (i, n) in names.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(n);
+        }
+        let bytes = out.as_bytes();
+        let n = bytes.len().min(b_len as usize);
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), b_ptr as *mut u8, n);
+        }
+        n as i64
     }
 }

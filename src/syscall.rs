@@ -25,7 +25,8 @@ pub mod nr {
     pub const FB_FLUSH: u64 = 17;
     pub const TIME: u64 = 18;
     pub const RAND: u64 = 19;
-    pub const MAX: u64 = 20;
+    pub const LISTDIR: u64 = 20;
+    pub const MAX: u64 = 21;
 }
 
 /// Syscall argument registers in order.
@@ -40,6 +41,7 @@ pub fn arity(nr: u64) -> usize {
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
         nr::FB_INFO => 1,
+        nr::LISTDIR => 4,
         nr::FB_PUTPIXEL => 4,
         _ => 0,
     }
@@ -69,6 +71,9 @@ pub trait KernelServices {
     fn read(&mut self, _fd: u64, _ptr: u64, _len: u64) -> i64 { ENOSYS }
     /// Close `fd`.
     fn close(&mut self, _fd: u64) -> i64 { ENOSYS }
+    /// List directory `path` (ptr+len) into user `buf` (ptr+len).
+    /// Returns bytes written or -errno.
+    fn listdir(&mut self, _p_ptr: u64, _p_len: u64, _b_ptr: u64, _b_len: u64) -> i64 { ENOSYS }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -94,6 +99,7 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::OPEN => svc.open(args[0], args[1], args[2]),
         nr::READ => svc.read(args[0], args[1], args[2]),
         nr::CLOSE => svc.close(args[0]),
+        nr::LISTDIR => svc.listdir(args[0], args[1], args[2], args[3]),
         nr::GETPID | nr::GETTID => svc.pid() as i64,
         nr::KERNEL_INFO => {
             // return (ptr,len) packed: caller reads version via ptr
