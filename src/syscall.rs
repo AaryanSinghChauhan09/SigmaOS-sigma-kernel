@@ -28,7 +28,13 @@ pub mod nr {
     pub const LISTDIR: u64 = 20;
     pub const FORK: u64 = 21;
     pub const EXEC: u64 = 22;
-    pub const MAX: u64 = 23;
+    pub const PIPE: u64 = 23;
+    pub const DUP: u64 = 24;
+    pub const DUP2: u64 = 25;
+    pub const KILL: u64 = 26;
+    pub const MOUNT: u64 = 27;
+    pub const UMOUNT: u64 = 28;
+    pub const MAX: u64 = 29;
 }
 
 /// Syscall argument registers in order.
@@ -37,8 +43,8 @@ pub const ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "r10", "r8", "r9"];
 /// Number of syscall arguments each syscall takes.
 pub fn arity(nr: u64) -> usize {
     match nr {
-        nr::READ | nr::WRITE | nr::OPEN | nr::STAT | nr::SPAWN | nr::WAIT => 3,
-        nr::CLOSE | nr::EXIT | nr::GETPID | nr::GETTID | nr::FB_FLUSH | nr::TIME | nr::FORK => 0,
+        nr::READ | nr::WRITE | nr::OPEN | nr::STAT | nr::SPAWN | nr::WAIT | nr::PIPE => 3,
+        nr::CLOSE | nr::EXIT | nr::GETPID | nr::GETTID | nr::FB_FLUSH | nr::TIME | nr::FORK | nr::KILL => 0,
         nr::RAND | nr::KERNEL_INFO => 2,
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
@@ -46,6 +52,9 @@ pub fn arity(nr: u64) -> usize {
         nr::LISTDIR => 4,
         nr::FB_PUTPIXEL => 4,
         nr::EXEC => 3,
+        nr::DUP => 1,
+        nr::DUP2 => 2,
+        nr::MOUNT | nr::UMOUNT => 3,
         _ => 0,
     }
 }
@@ -95,6 +104,18 @@ pub trait KernelServices {
     /// Exec new program at `path` (ptr+len) with `argv` (ptr+len) and `envp` (ptr+len).
     /// Does not return on success; returns -errno on error.
     fn exec(&mut self, _path_ptr: u64, _path_len: u64, _argv_ptr: u64, _argv_len: u64, _envp_ptr: u64, _envp_len: u64) -> i64 { ENOSYS }
+    /// Create a pipe; returns read fd in lower 32 bits, write fd in upper 32 bits.
+    fn pipe(&mut self) -> i64 { ENOSYS }
+    /// Duplicate a file descriptor.
+    fn dup(&mut self, _fd: u64) -> i64 { ENOSYS }
+    /// Duplicate a file descriptor to a specific fd number.
+    fn dup2(&mut self, _oldfd: u64, _newfd: u64) -> i64 { ENOSYS }
+    /// Send a signal to a process.
+    fn kill(&mut self, _pid: u64, _signal: u64) -> i64 { ENOSYS }
+    /// Mount a filesystem.
+    fn mount(&mut self, _source: u64, _source_len: u64, _target: u64, _target_len: u64, _fstype: u64, _fstype_len: u64) -> i64 { ENOSYS }
+    /// Unmount a filesystem.
+    fn umount(&mut self, _target: u64, _target_len: u64) -> i64 { ENOSYS }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -130,6 +151,12 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::GETPID | nr::GETTID => svc.pid() as i64,
         nr::FORK => svc.fork(),
         nr::EXEC => svc.exec(args[0], args[1], args[2], args[3], args[4], args[5]),
+        nr::PIPE => svc.pipe(),
+        nr::DUP => svc.dup(args[0]),
+        nr::DUP2 => svc.dup2(args[0], args[1]),
+        nr::KILL => svc.kill(args[0], args[1]),
+        nr::MOUNT => svc.mount(args[0], args[1], args[2], args[3], args[4], args[5]),
+        nr::UMOUNT => svc.umount(args[0], args[1]),
         nr::KERNEL_INFO => {
             // return (ptr,len) packed: caller reads version via ptr
             let v = svc.kernel_version();
