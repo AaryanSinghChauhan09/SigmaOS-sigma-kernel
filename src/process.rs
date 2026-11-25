@@ -22,6 +22,9 @@ pub struct LoadedSegment {
     pub flags: u32,
     /// File offset of this segment's bytes in the ELF image.
     pub offset: u64,
+    /// In-page offset of the segment's first vaddr (vaddr & 0xfff).
+    /// File bytes land at dst[delta..], not dst[0].
+    pub delta: u64,
     /// Physical address of the first frame backing this segment.
     pub phys: u64,
     /// Number of 4 KiB frames allocated (covers memsz, page-aligned).
@@ -105,7 +108,11 @@ fn load_segment(
     seg: &LoadSegment,
     alloc: &mut FrameAllocator,
 ) -> Result<LoadedSegment, KernelError> {
-    let span = page_align_up(seg.memsz);
+    // frames must cover delta+memsz: the segment's first byte sits
+    // delta bytes into its first page, so the tail can need one
+    // more page than memsz alone suggests.
+    let delta = seg.vaddr & 0xfff;
+    let span = page_align_up(delta + seg.memsz);
     let frames = span / FRAME_SIZE;
     let phys = alloc
         .alloc_contiguous(frames)
@@ -121,6 +128,7 @@ fn load_segment(
 
     Ok(LoadedSegment {
         offset: seg.offset,
+        delta: seg.vaddr & 0xfff,
         vaddr: page_align_down(seg.vaddr),
         filesz: seg.filesz,
         memsz: seg.memsz,
@@ -131,28 +139,33 @@ fn load_segment(
 }
 
 /// Copy file bytes for a segment into `dst` (frame-backing slice).
+/// `delta` is the segment's in-page vaddr offset (vaddr & 0xfff):
+/// file byte 0 corresponds to dst[delta], and dst[..delta] plus the
+/// `memsz > filesz` tail are zero-filled. `dst` covers the
+/// page-aligned frame span.
 pub fn materialize_with_offset(
     image: &[u8],
     file_offset: u64,
     filesz: u64,
     memsz: u64,
+    delta: u64,
     dst: &mut [u8],
 ) -> Result<(), KernelError> {
-    let need = memsz as usize;
+    let delta = delta as usize;
+    let need = delta + memsz as usize;
     if dst.len() < need {
-        return Err(KernelError::InvalidArg("dst smaller than memsz"));
+        return Err(KernelError::InvalidArg("dst smaller than segment span"));
     }
     let off = file_offset as usize;
     let len = filesz as usize;
     if off + len > image.len() {
         return Err(KernelError::Fs("segment data out of bounds"));
     }
-    dst[..len].copy_from_slice(&image[off..off + len]);
-    if memsz > filesz {
-        for b in &mut dst[len..need] {
-            *b = 0;
-        }
+    // zero the whole mapped span first (covers pre-segment pad + bss)
+    for b in dst.iter_mut().take(need) {
+        *b = 0;
     }
+    dst[delta..delta + len].copy_from_slice(&image[off..off + len]);
     Ok(())
 }
 

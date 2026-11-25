@@ -246,6 +246,29 @@ isr_common:
     call ser_putc
     /* dump 8 qwords from rsp as "<r11=val>" markers — actually print
      * rsp then 4 stack qwords low-32 bits each, space separated */
+    /* for #PF (vec 14) dump CR2 so we see the faulting data addr */
+    cmp $14, %r8d
+    jne 90f
+    mov %cr2, %r10
+    mov $'C', %cl
+    call ser_putc
+    mov $16, %r11d
+91: mov %r10, %rdx
+    mov %r11d, %ecx
+    shr %cl, %rdx
+    and $0xf, %edx
+    mov %edx, %ecx
+    cmp $10, %ecx
+    jb 92f
+    add $87, %cl
+    jmp 93f
+92: add $48, %cl
+93: call ser_putc
+    sub $4, %r11d
+    jns 91b
+    mov $' ', %cl
+    call ser_putc
+90:
     mov $'S', %cl
     call ser_putc
     mov %r9, %r10           /* r9 = rsp at entry */

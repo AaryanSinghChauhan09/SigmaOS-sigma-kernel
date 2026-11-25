@@ -454,7 +454,7 @@ fn run_init(
         let len = (s.frames * 4096) as usize;
         // SAFETY: phys is a freshly allocated frame range we own.
         let dst = unsafe { core::slice::from_raw_parts_mut(s.phys as *mut u8, len) };
-        if let Err(e) = kernel::process::materialize_with_offset(init, s.offset, s.filesz, s.memsz, dst) {
+        if let Err(e) = kernel::process::materialize_with_offset(init, s.offset, s.filesz, s.memsz, s.delta, dst) {
             arch::log(&alloc::format!("sigma-kernel: materialize failed {:?}\n", e));
             con.println("materialize failed");
             loop { arch::halt() }
