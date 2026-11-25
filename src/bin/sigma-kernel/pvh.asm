@@ -120,27 +120,124 @@ build_idt:
     movl $0, 12(%rdi)
     add $16, %rdi
     inc %ecx
-    cmp $32, %ecx
+    cmp $64, %ecx
     jb build_idt
     lidt idt_ptr
 
     /* Syscall MSRs: STAR packs kernel CS (syscall) + user base
      * (sysret); LSTAR = entry stub; SFMASK = 0 (keep rflags). */
+    /* STAR[63:32] -> EDX, STAR[31:0] -> EAX for wrmsr.
+     * STAR = (syscall_base 0x18)<<32 | (sysret_base 0x20)<<48:
+     *   syscall -> CS 0x18 SS 0x20 ; sysret -> CS 0x33 SS 0x2b. */
     mov $0xc0000081, %ecx      /* STAR */
-    /* STAR = (0x18<<32) | (0x20<<48) */
-    mov $0x18, %eax
-    shl $32, %rax
-    mov $0x20, %rbx
-    shl $48, %rbx
-    or %rbx, %rax
+    mov $0x00200018, %edx
+    xor %eax, %eax
     wrmsr
     mov $0xc0000082, %ecx      /* LSTAR */
     movabs $syscall_entry, %rax
+    mov %rax, %rdx
+    shr $32, %rdx              /* edx:eax = entry address */
     wrmsr
-    xor %eax, %eax
-    mov $0xc0000084, %ecx      /* SFMASK */
+    mov $0xc0000084, %ecx      /* SFMASK: clear IF on syscall entry */
+    mov $0x200, %eax
+    xor %edx, %edx
     wrmsr
 
+    /* TSS: 104-byte struct; RSP0 = kernel stack for ring3->kernel
+     * interrupt stack switch. Descriptor built at runtime into the
+     * GDT slot at 0x38. */
+    movabs $stack_top, %rax
+    mov %rax, tss+4             /* TSS.RSP0 */
+    movw $104, tss+102          /* IOPB offset: no I/O bitmap */
+    lea tss(%rip), %rax
+    mov %ax, gdt_tss+0          /* limit[15:0] = 103 */
+    movw $103, gdt_tss
+    mov %ax, gdt_tss+2          /* base[15:0] */
+    shr $16, %rax
+    mov %al, gdt_tss+4          /* base[23:16] */
+    movb $0x89, gdt_tss+5       /* P=1 type=9 (64-bit TSS avail) */
+    movb $0, gdt_tss+6          /* limit[19:16]|flags = 0 */
+    movb $0, gdt_tss+7
+    shr $8, %rax
+    mov %al, gdt_tss+8          /* base[31:24] */
+    /* base[63:32] = 0 (tss < 4 GiB); bytes 9-11 reserved = 0 */
+    mov $0x38, %ax
+    ltr %ax
+
+    /* PIT channel 0 ~100 Hz for the timer IRQ (vector 32). */
+    mov $0x43, %dx
+    mov $0x36, %al              /* ch0, lobyte/hibyte, mode 3 */
+    out %al, %dx
+    mov $0x40, %dx
+    mov $0x99, %al              /* divisor 1193 lo ~1kHz */
+    out %al, %dx
+    mov $0x04, %al              /* hi */
+    out %al, %dx
+
+    /* Remap 8259 PICs: IRQ0-7 -> vectors 0x20-0x27 (master),
+     * IRQ8-15 -> 0x28-0x2f (slave). Without this IRQ0 arrives
+     * at vector 8 (#DF) under the BIOS default mapping. */
+    mov $0x20, %dx
+    mov $0x11, %al              /* ICW1: init, edge, cascade */
+    out %al, %dx
+    mov $0x21, %dx
+    mov $0x20, %al              /* ICW2: vector offset 0x20 */
+    out %al, %dx
+    mov $0x21, %dx
+    mov $0x04, %al              /* ICW3: slave on IRQ2 */
+    out %al, %dx
+    mov $0x21, %dx
+    mov $0x01, %al              /* ICW4: 8086 mode */
+    out %al, %dx
+    mov $0xa0, %dx
+    mov $0x11, %al
+    out %al, %dx
+    mov $0xa1, %dx
+    mov $0x28, %al              /* slave offset 0x28 */
+    out %al, %dx
+    mov $0xa1, %dx
+    mov $0x02, %al
+    out %al, %dx
+    mov $0xa1, %dx
+    mov $0x01, %al
+    out %al, %dx
+    /* Unmask IRQ0 (timer) on master; leave slave masked. */
+    mov $0x21, %dx
+    mov $0xfe, %al              /* OCW1: IRQ0 enabled */
+    out %al, %dx
+    mov $0xa1, %dx
+    mov $0xff, %al
+    out %al, %dx
+
+    /* Local APIC timer via x2APIC MSRs (Linux lapic timer path;
+     * the legacy PIT->PIC route only delivered one IRQ in QEMU).
+     * APIC_BASE: bit11 EN | bit10 EXTD(x2apic) = 0xc00.
+     * Timer vector 0x30 (outside the PIC's 0x20-0x2f range). */
+    mov $0x1b, %ecx            /* IA32_APIC_BASE */
+    rdmsr
+    or $0xc00, %eax
+    wrmsr
+    mov $0x80f, %ecx            /* SPURIOUS_VECTOR: en|vec 0xff */
+    xor %eax, %eax
+    xor %edx, %edx
+    mov $0x1ff, %eax
+    wrmsr
+    mov $0x3e0, %ecx            /* DIVIDE_CONTROL: /16 */
+    xor %eax, %eax
+    xor %edx, %edx
+    xor %eax, %eax
+    xor %edx, %edx
+    wrmsr
+    mov $0x832, %ecx            /* LVT_TIMER: vec 0x30 | periodic */
+    xor %eax, %eax
+    xor %edx, %edx
+    mov $0x20030, %eax
+    wrmsr
+    mov $0x838, %ecx            /* INITIAL_COUNT */
+    xor %eax, %eax
+    xor %edx, %edx
+    mov $0x100000, %eax
+    wrmsr
     movabs $saved_info, %rdi
     mov (%rdi), %rdi            /* rdi = hvm_start_info paddr */
     movabs $pvh_kernel_entry, %rax
@@ -152,7 +249,7 @@ isr\n:
     mov $\n, %eax
     jmp isr_common
 .endm
-.irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+.irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63
 ISR \n
 .endr
 
@@ -175,8 +272,36 @@ ser_putc:
  * eax = vector (set by stub). Error-code stack layout ignored. */
 isr_common:
     cli
+    cmp $32, %eax          /* vector in eax; regs still pristine */
+    jae 80f                /* IRQs: skip exception dump, EOI+iret */
     mov %eax, %r8d
-    mov $'E', %cl
+    cmp $13, %eax            /* #GP: dump error code at (%rsp) */
+    jne 86f
+    mov $'G', %cl
+    call ser_putc
+    mov $'P', %cl
+    call ser_putc
+    mov (%rsp), %eax         /* error code */
+    mov %eax, %r12d
+    mov $28, %r13d
+87: mov %r12d, %eax
+    mov %eax, %edx
+    mov %r13d, %ecx
+    shr %cl, %edx
+    and $0xf, %edx
+    mov %edx, %ecx
+    cmp $10, %ecx
+    jb 88f
+    add $87, %cl
+    jmp 89f
+88: add $48, %cl
+89: call ser_putc
+    sub $4, %r13d
+    jns 87b
+    mov $10, %cl
+    call ser_putc
+86: cmp $32, %eax          /* IRQs: skip exception dump, EOI+iret */
+    jae 80f
     call ser_putc
     mov %r8d, %eax
     shr $4, %eax
@@ -300,8 +425,65 @@ isr_common:
     jnz 13b
     mov $10, %cl
     call ser_putc
-6:  cli
-    hlt
+6:  cmp $32, %r8d
+    jae 80f                /* IRQ: EOI + return to context */
+    cli
+81: hlt
+    jmp 81b
+80: /* IRQ path: vector still in eax. Save every GPR (iretq
+     * restores none), count ticks, dot every 64, EOI, return. */
+    mov %eax, irq_vec
+    push %rax
+    push %rcx
+    push %rdx
+    push %rsi
+    push %rdi
+    push %rbx
+    push %rbp
+    push %r8
+    push %r9
+    push %r10
+    push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    movabs $tick_ctr, %rax
+    incq (%rax)
+    mov (%rax), %rdx
+82: /* EOI: vec 0x30 -> x2APIC MSR 0x80b; PIC IRQs -> 0x20/0xa0 */
+    mov irq_vec, %eax
+    cmp $0x30, %eax
+    je 83f
+    mov $0x20, %al
+    mov $0x20, %dx
+    out %al, %dx           /* master PIC EOI */
+    cmp $0x28, %eax        /* slave IRQs (vec >= 0x28) need both */
+    jb 84f
+    mov $0x20, %al
+    mov $0xa0, %dx
+    out %al, %dx           /* slave PIC EOI */
+    jmp 84f
+83: xor %eax, %eax        /* x2APIC EOI */
+    xor %edx, %edx
+    mov $0x80b, %ecx
+    wrmsr
+84: pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %r11
+    pop %r10
+    pop %r9
+    pop %r8
+    pop %rbp
+    pop %rbx
+    pop %rdi
+    pop %rsi
+    pop %rdx
+    pop %rcx
+    pop %rax
+    iretq
     jmp 6b
 
 /* Xen ELF note: entry type 18 = XEN_ELFNOTE_PHYS32_ENTRY */
@@ -325,7 +507,10 @@ pvh_gdt:
     .quad 0x00af92000000ffff   /* 0x20: 64-bit kernel data, DPL=0 */
     .quad 0x00cff2000000ffff   /* 0x28: 64-bit user data, DPL=3 */
     .quad 0x00affa000000ffff   /* 0x30: 64-bit user code, L=1, DPL=3 */
+    .quad 0                    /* 0x38: TSS descriptor (filled at runtime) */
+    .quad 0
 pvh_gdt_end:
+gdt_tss = pvh_gdt + 0x38        /* TSS descriptor slot (idx7/8) */
 pvh_gdt_ptr:
     .word pvh_gdt_end - pvh_gdt - 1
     .long pvh_gdt
@@ -337,17 +522,17 @@ saved_info: .quad 0
 .section .data
 .align 8
 isr_table:
-.irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+.irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63
     .quad isr\n
 .endr
 idt_ptr:
-    .word 32*16 - 1
+    .word 64*16 - 1
     .long idt_table
     .long 0
 
 .section .bss
 .align 16
-idt_table: .skip 32*16
+idt_table: .skip 64*16
 
 .section .bss
 .align 4096
@@ -372,13 +557,17 @@ enter_user:
     mov %rdx, %cr3
     push $0x2b             /* user ss */
     push %rsi              /* user rsp */
-    push $0x2              /* rflags: IF=0 (no IRQs yet) */
+    push $0x202            /* rflags: IF=1 (timer IRQs on) */
     push $0x33             /* user cs */
     push %rdi              /* user rip */
     iretq
 
 .global syscall_entry
 syscall_entry:
+    /* Mask IRQs for the duration of kernel syscall handling —
+     * the user's rflags (IF=1) is preserved in r11 and restored
+     * by sysret, so user mode keeps ticking afterwards. */
+    cli
     /* syscall leaves RSP=user rsp; switch to kernel stack.
      * rcx=user rip, r11=user rflags (clobbered by syscall). */
     mov %rsp, user_sp
@@ -410,3 +599,6 @@ sf_rdx:    .quad 0
 sf_r10:    .quad 0
 sf_r8:     .quad 0
 sf_r9:     .quad 0
+tick_ctr:  .quad 0
+irq_vec:   .long 0
+tss:       .skip 104
