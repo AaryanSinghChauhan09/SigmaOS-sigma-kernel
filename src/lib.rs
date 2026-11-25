@@ -20,6 +20,7 @@ pub mod process;
 pub mod ps2;
 pub mod syscall;
 pub mod uart;
+pub mod usermem;
 pub mod virtio;
 pub mod virtio_blk;
 pub mod virtio_gpu;

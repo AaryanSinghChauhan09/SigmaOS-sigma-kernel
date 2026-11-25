@@ -8,7 +8,7 @@
 //! `fs/binfmt_elf.c` `load_elf_binary` and the rust-vmm
 //! `vm-memory` GuestMemory model.
 
-use crate::elf::{image_span, load_segments, parse_header, LoadSegment};
+use crate::elf::{image_span, load_segments, parse_header, ElfHeader, LoadSegment, ET_DYN};
 use crate::error::KernelError;
 use crate::mm::{FrameAllocator, FRAME_SIZE};
 use alloc::vec::Vec;
@@ -42,6 +42,11 @@ pub struct UserImage {
 /// Default user stack size: 8 pages (32 KiB) — plenty for sigma-sh.
 pub const USER_STACK_PAGES: u64 = 8;
 
+/// Virtual base for ET_DYN (PIE) user images — 4 MiB, inside the
+/// second 2 MiB slot so it never collides with the kernel's first
+/// 2 MiB of identity-mapped memory.
+pub const USER_LOAD_BIAS: u64 = 0x400000;
+
 fn page_align_down(x: u64) -> u64 { x & !(FRAME_SIZE - 1) }
 fn page_align_up(x: u64) -> u64 { (x + FRAME_SIZE - 1) & !(FRAME_SIZE - 1) }
 
@@ -64,9 +69,15 @@ pub fn load_image(
     let segs = load_segments(image, &hdr)?;
     let (lo, hi) = image_span(&segs);
 
+    // ET_DYN (PIE) images are linked at base 0 — relocate them to a
+    // user bias clear of the kernel's low identity map so user pages
+    // never overlap kernel memory. ET_EXEC keeps its linked vaddrs.
+    let bias = if hdr.etype == ET_DYN { USER_LOAD_BIAS } else { 0 };
     let mut loaded = Vec::with_capacity(segs.len());
     for s in &segs {
-        loaded.push(load_segment(image, s, alloc)?);
+        let mut s2 = s.clone();
+        s2.vaddr += bias;
+        loaded.push(load_segment(image, &s2, alloc)?);
     }
 
     let stack_phys = alloc
@@ -74,7 +85,7 @@ pub fn load_image(
         .ok_or(KernelError::OutOfMemory)?;
 
     Ok(UserImage {
-        entry: hdr.entry,
+        entry: hdr.entry + bias,
         segments: loaded,
         stack_phys,
         stack_pages: USER_STACK_PAGES,
