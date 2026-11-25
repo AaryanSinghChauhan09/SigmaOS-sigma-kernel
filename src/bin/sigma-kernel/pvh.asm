@@ -59,7 +59,7 @@ pvh32_entry:
     /* EFER.LME (bit 8) — required for 64-bit mode */
     mov $0xc0000080, %ecx
     rdmsr
-    or $0x100, %eax
+    or $0x101, %eax
     wrmsr
 
     mov $pdpt, %eax
@@ -123,6 +123,23 @@ build_idt:
     cmp $32, %ecx
     jb build_idt
     lidt idt_ptr
+
+    /* Syscall MSRs: STAR packs kernel CS (syscall) + user base
+     * (sysret); LSTAR = entry stub; SFMASK = 0 (keep rflags). */
+    mov $0xc0000081, %ecx      /* STAR */
+    /* STAR = (0x18<<32) | (0x20<<48) */
+    mov $0x18, %eax
+    shl $32, %rax
+    mov $0x20, %rbx
+    shl $48, %rbx
+    or %rbx, %rax
+    wrmsr
+    mov $0xc0000082, %ecx      /* LSTAR */
+    movabs $syscall_entry, %rax
+    wrmsr
+    xor %eax, %eax
+    mov $0xc0000084, %ecx      /* SFMASK */
+    wrmsr
 
     movabs $saved_info, %rdi
     mov (%rdi), %rdi            /* rdi = hvm_start_info paddr */
@@ -283,8 +300,8 @@ pvh_gdt:
     .quad 0x00cf92000000ffff   /* 0x10: 32-bit data */
     .quad 0x00af9a000000ffff   /* 0x18: 64-bit kernel code, L=1, DPL=0 */
     .quad 0x00af92000000ffff   /* 0x20: 64-bit kernel data, DPL=0 */
-    .quad 0x00affa000000ffff   /* 0x28: 64-bit user code, L=1, DPL=3 */
-    .quad 0x00cff2000000ffff   /* 0x30: 64-bit user data, DPL=3 */
+    .quad 0x00cff2000000ffff   /* 0x28: 64-bit user data, DPL=3 */
+    .quad 0x00affa000000ffff   /* 0x30: 64-bit user code, L=1, DPL=3 */
 pvh_gdt_end:
 pvh_gdt_ptr:
     .word pvh_gdt_end - pvh_gdt - 1
@@ -318,3 +335,55 @@ pd:     .skip 4096
 stack_bottom:
     .skip 65536
 stack_top:
+
+/* ---- ring-3 transition + syscall entry ----
+ * User CS=0x33 SS=0x2b (GDT idx6/idx5 | RPL3).
+ * STAR = (kcs<<32)|(ucs_base<<48): syscall -> CS 0x18 SS 0x20,
+ * sysret -> CS (0x20+16)|3=0x33, SS (0x20+8)|3=0x2b.
+ */
+.section .text
+.code64
+.global enter_user
+enter_user:
+    /* rdi=user rip, rsi=user rsp, rdx=user cr3 */
+    mov %rdx, %cr3
+    push $0x2b             /* user ss */
+    push %rsi              /* user rsp */
+    push $0x2              /* rflags: IF=0 (no IRQs yet) */
+    push $0x33             /* user cs */
+    push %rdi              /* user rip */
+    iretq
+
+.global syscall_entry
+syscall_entry:
+    /* syscall leaves RSP=user rsp; switch to kernel stack.
+     * rcx=user rip, r11=user rflags (clobbered by syscall). */
+    mov %rsp, user_sp
+    movabs $stack_top, %rsp
+    mov %rax, sf_rax
+    mov %rcx, sf_rcx
+    mov %r11, sf_r11
+    mov %rdi, sf_rdi
+    mov %rsi, sf_rsi
+    mov %rdx, sf_rdx
+    mov %r10, sf_r10
+    mov %r8,  sf_r8
+    mov %r9,  sf_r9
+    call syscall_trap      /* returns result in rax */
+    mov user_sp, %rsp
+    mov sf_rcx, %rcx
+    mov sf_r11, %r11
+    sysretq
+
+.section .bss
+.align 8
+user_sp:   .quad 0
+sf_rax:    .quad 0
+sf_rcx:    .quad 0
+sf_r11:    .quad 0
+sf_rdi:    .quad 0
+sf_rsi:    .quad 0
+sf_rdx:    .quad 0
+sf_r10:    .quad 0
+sf_r8:     .quad 0
+sf_r9:     .quad 0

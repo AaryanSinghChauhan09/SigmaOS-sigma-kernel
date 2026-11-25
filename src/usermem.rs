@@ -95,7 +95,7 @@ fn ensure_pd(
     let mut pdpt = get_entry(phys_mem, pml4, pi);
     if pdpt & P_PRESENT == 0 {
         let t = alloc_table(alloc)?;
-        pdpt = t.phys | P_PRESENT | P_WRITE;
+        pdpt = t.phys | P_PRESENT | P_WRITE | P_USER;
         set_entry(phys_mem, pml4, pi, pdpt);
     }
     let pdpt_addr = pdpt & !0xfff;
@@ -104,7 +104,7 @@ fn ensure_pd(
     let mut pd = get_entry(phys_mem, pdpt_addr, di);
     if pd & P_PRESENT == 0 {
         let t = alloc_table(alloc)?;
-        pd = t.phys | P_PRESENT | P_WRITE;
+        pd = t.phys | P_PRESENT | P_WRITE | P_USER;
         set_entry(phys_mem, pdpt_addr, di, pd);
     }
     Ok(pd & !0xfff)
@@ -142,7 +142,7 @@ pub fn map_4k_user(
     let pd_entry = get_entry(phys_mem, pd, mi);
     let pt_addr = if pd_entry & P_PRESENT == 0 {
         let t = alloc_table(alloc)?;
-        let a = t.phys | P_PRESENT | P_WRITE;
+        let a = t.phys | P_PRESENT | P_WRITE | P_USER;
         set_entry(phys_mem, pd, mi, a);
         t.phys
     } else if pd_entry & P_PS == 0 {
@@ -186,13 +186,13 @@ pub fn build_user_tables(
     // PML4[0] -> PDPT for low half
     let pdpt_t = alloc_table(alloc)?;
     tables.push(pdpt_t);
-    set_entry(phys_mem, pml4, 0, pdpt_t.phys | P_PRESENT | P_WRITE);
+    set_entry(phys_mem, pml4, 0, pdpt_t.phys | P_PRESENT | P_WRITE | P_USER);
     let pdpt = pdpt_t.phys;
 
     // PDPT[0] -> PD covering 0..1 GiB
     let pd_t = alloc_table(alloc)?;
     tables.push(pd_t);
-    set_entry(phys_mem, pdpt, 0, pd_t.phys | P_PRESENT | P_WRITE);
+    set_entry(phys_mem, pdpt, 0, pd_t.phys | P_PRESENT | P_WRITE | P_USER);
     let pd = pd_t.phys;
 
     // Group user pages by 2 MiB slot.
@@ -217,7 +217,7 @@ pub fn build_user_tables(
         let pt_t = alloc_table(alloc)?;
         tables.push(pt_t);
         let (_, _, mi, _) = indices(*slot);
-        set_entry(phys_mem, pd, mi, pt_t.phys | P_PRESENT | P_WRITE);
+        set_entry(phys_mem, pd, mi, pt_t.phys | P_PRESENT | P_WRITE | P_USER);
         for &(v, p) in pages {
             let (_, _, _, ti) = indices(v);
             set_entry(

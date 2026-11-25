@@ -166,3 +166,33 @@ impl kernel::syscall::KernelServices for KernelSvc {
         kernel::KERNEL_VERSION
     }
 }
+
+/// Minimal KernelServices for the syscall trap path — serial-only
+/// output so it needs no console global. Used by syscall_trap.
+pub struct TrapSvc;
+
+impl kernel::syscall::KernelServices for TrapSvc {
+    fn write(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
+        if fd != 1 && fd != 2 {
+            return -9;
+        }
+        // SAFETY: user pages are mapped under the active (user) CR3.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        for &b in bytes {
+            if b == b'\n' {
+                log("\n");
+            } else if (0x20..0x7f).contains(&b) {
+                let mut c = [0u8; 1];
+                c[0] = b;
+                log(core::str::from_utf8(&c).unwrap());
+            }
+        }
+        len as i64
+    }
+    fn exit(&mut self, code: u64) -> ! {
+        log("sigma-kernel: user exit\n");
+        loop { core::hint::spin_loop() }
+    }
+    fn pid(&self) -> u64 { 1 }
+    fn kernel_version(&self) -> &'static str { kernel::KERNEL_VERSION }
+}

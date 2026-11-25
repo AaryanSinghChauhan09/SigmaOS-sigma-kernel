@@ -11,6 +11,8 @@
 extern crate alloc;
 
 use alloc::string::ToString;
+use alloc::vec::Vec;
+use alloc::vec;
 extern crate sigma_kernel as kernel;
 
 #[allow(unsafe_code)]
@@ -165,6 +167,11 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
     } else {
         arch::log("sigma-kernel: no initramfs module\n");
         con.println("no initramfs module");
+    }
+
+    // Run /init in ring 3 if present.
+    if let Some(init) = vfs.read("/init") {
+        run_init(init, bi, &mut con);
     }
 
     // PS/2 keyboard + interactive echo.
@@ -327,5 +334,136 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
     loop {
         arch::halt();
+    }
+}
+
+/* ---- ring-3 user entry ---- */
+
+extern "C" {
+    fn enter_user(entry: u64, rsp: u64, cr3: u64) -> !;
+    static mut sf_rax: u64;
+    static mut sf_rcx: u64;
+    static mut sf_r11: u64;
+    static mut sf_rdi: u64;
+    static mut sf_rsi: u64;
+    static mut sf_rdx: u64;
+    static mut sf_r10: u64;
+    static mut sf_r8: u64;
+    static mut sf_r9: u64;
+}
+
+/// Syscall trap entry — called from asm `syscall_entry` with user
+/// registers saved in the sf_* frame. Dispatches through the
+/// kernel ABI and returns the result in rax.
+#[no_mangle]
+pub extern "C" fn syscall_trap() -> i64 {
+    // SAFETY: frame written by syscall_entry asm before the call.
+    unsafe {
+        let nr = sf_rax;
+        let args = [sf_rdi, sf_rsi, sf_rdx, sf_r10, sf_r8, sf_r9];
+        let mut svc = arch::TrapSvc;
+        kernel::syscall::dispatch(nr, &args, &mut svc)
+    }
+}
+
+/// Physical ranges the user allocator must never hand out:
+/// the kernel image and every boot module (initramfs).
+fn reserved_ranges(bi: &kernel::boot::BootInfo) -> Vec<(u64, u64)> {
+    let mut r = vec![(0x100000u64, 0x100000u64)]; // kernel: 1-2 MiB
+    for &(p, sz) in &bi.modules {
+        r.push((p, p + sz));
+    }
+    r
+}
+
+fn usable_regions(bi: &kernel::boot::BootInfo) -> Vec<kernel::boot::MemRegion> {
+    let reserved = reserved_ranges(bi);
+    let mut out = Vec::new();
+    'regions: for reg in &bi.mem_regions {
+        if reg.mem_type != 1 {
+            continue;
+        }
+        let rs = reg.start;
+        let re = reg.start + reg.len;
+        for &(lo, hi) in &reserved {
+            if rs < hi && re > lo {
+                // split around the reserved hole
+                if rs < lo {
+                    out.push(kernel::boot::MemRegion { start: rs, len: lo - rs, mem_type: 1 });
+                }
+                if hi < re {
+                    out.push(kernel::boot::MemRegion { start: hi, len: re - hi, mem_type: 1 });
+                }
+                continue 'regions;
+            }
+        }
+        out.push(*reg);
+    }
+    out
+}
+
+/// Load /init, build its page tables, materialize segments, and
+/// enter ring 3. Diverges.
+fn run_init(
+    init: &[u8],
+    bi: &kernel::boot::BootInfo,
+    con: &mut kernel::console::TextConsole<arch::VgaBuf>,
+) -> ! {
+    let regions = usable_regions(bi);
+    let mut alloc = match kernel::mm::FrameAllocator::new(&regions) {
+        Ok(a) => a,
+        Err(e) => {
+            arch::log(&alloc::format!("sigma-kernel: frame alloc failed {:?}\n", e));
+            con.println("frame allocator failed");
+            loop { arch::halt() }
+        }
+    };
+    let img = match kernel::process::load_image(init, &mut alloc) {
+        Ok(i) => i,
+        Err(e) => {
+            arch::log(&alloc::format!("sigma-kernel: load_image failed {:?}\n", e));
+            con.println("load_image failed");
+            loop { arch::halt() }
+        }
+    };
+    con.println(&alloc::format!("/init loaded: entry {:#x}, {} segs", img.entry, img.segments.len()));
+
+    // Collect 4K user pages: segments + stack.
+    let mut pages = Vec::new();
+    for s in &img.segments {
+        for i in 0..s.frames {
+            pages.push((s.vaddr + i * 4096, s.phys + i * 4096));
+        }
+    }
+    let stack_lo = kernel::process::USER_STACK_TOP - img.stack_pages * 4096;
+    for i in 0..img.stack_pages {
+        pages.push((stack_lo + i * 4096, img.stack_phys + i * 4096));
+    }
+
+    let tables = match kernel::usermem::build_user_tables(&pages, 0x200000, &mut alloc, &mut arch::IdentityPhysMem) {
+        Ok(t) => t,
+        Err(e) => {
+            arch::log(&alloc::format!("sigma-kernel: user tables failed {:?}\n", e));
+            con.println("user page tables failed");
+            loop { arch::halt() }
+        }
+    };
+
+    // Materialize segment bytes into the allocated frames.
+    for s in &img.segments {
+        let len = (s.frames * 4096) as usize;
+        // SAFETY: phys is a freshly allocated frame range we own.
+        let dst = unsafe { core::slice::from_raw_parts_mut(s.phys as *mut u8, len) };
+        if let Err(e) = kernel::process::materialize_with_offset(init, s.offset, s.filesz, s.memsz, dst) {
+            arch::log(&alloc::format!("sigma-kernel: materialize failed {:?}\n", e));
+            con.println("materialize failed");
+            loop { arch::halt() }
+        }
+    }
+
+    con.println("entering /init (ring 3)...");
+    arch::log("sigma-kernel: entering user mode\n");
+    unsafe {
+        enter_user(img.entry, kernel::process::initial_rsp(&img), tables.cr3)
     }
 }

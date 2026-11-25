@@ -20,6 +20,8 @@ pub struct LoadedSegment {
     pub filesz: u64,
     pub memsz: u64,
     pub flags: u32,
+    /// File offset of this segment's bytes in the ELF image.
+    pub offset: u64,
     /// Physical address of the first frame backing this segment.
     pub phys: u64,
     /// Number of 4 KiB frames allocated (covers memsz, page-aligned).
@@ -41,6 +43,10 @@ pub struct UserImage {
 
 /// Default user stack size: 8 pages (32 KiB) — plenty for sigma-sh.
 pub const USER_STACK_PAGES: u64 = 8;
+
+/// User stack top virtual address — a fixed low window at 8 MiB,
+/// inside the user CR3's low-1GiB map and clear of the load bias.
+pub const USER_STACK_TOP: u64 = 0x800000 + USER_STACK_PAGES * FRAME_SIZE;
 
 /// Virtual base for ET_DYN (PIE) user images — 4 MiB, inside the
 /// second 2 MiB slot so it never collides with the kernel's first
@@ -114,6 +120,7 @@ fn load_segment(
     let _ = phys; // frames allocated; bytes materialized by caller
 
     Ok(LoadedSegment {
+        offset: seg.offset,
         vaddr: page_align_down(seg.vaddr),
         filesz: seg.filesz,
         memsz: seg.memsz,
@@ -164,8 +171,8 @@ pub fn user_mappings(img: &UserImage) -> Vec<(u64, u64, u32)> {
             out.push((v, p, 1 | w | 4)); // PRESENT | maybe WRITE | USER
         }
     }
-    // stack: top of user space, grows down
-    let stack_top = 0x0000_7fff_ffff_f000u64;
+    // stack: fixed low window, grows down from USER_STACK_TOP
+    let stack_top = USER_STACK_TOP;
     let stack_lo = stack_top - img.stack_pages * FRAME_SIZE;
     for i in 0..img.stack_pages {
         out.push((
@@ -179,7 +186,7 @@ pub fn user_mappings(img: &UserImage) -> Vec<(u64, u64, u32)> {
 
 /// Initial user RSP: top of the stack minus a small argv/envp area.
 pub fn initial_rsp(_img: &UserImage) -> u64 {
-    0x0000_7fff_ffff_f000u64 - 0x1000
+    USER_STACK_TOP - 0x1000
 }
 
 #[cfg(test)]
@@ -245,7 +252,7 @@ mod tests {
         // all have USER bit (bit 2 = 4)
         assert!(maps.iter().all(|&(_, _, f)| f & 4 != 0));
         // stack pages are writable
-        let stack_maps: Vec<_> = maps.iter().filter(|(v, _, _)| *v >= 0x7fff_ffff_f000 - 8 * FRAME_SIZE).collect();
+        let stack_maps: Vec<_> = maps.iter().filter(|(v, _, _)| *v >= USER_STACK_TOP - 8 * FRAME_SIZE).collect();
         assert!(stack_maps.iter().all(|&(_, _, f)| f & 2 != 0));
     }
 
@@ -254,8 +261,8 @@ mod tests {
         let mut a = test_alloc();
         let user = load_image(&elf_image(), &mut a).unwrap();
         let rsp = initial_rsp(&user);
-        assert!(rsp >= 0x7fff_ffff_f000 - USER_STACK_PAGES * FRAME_SIZE);
-        assert!(rsp < 0x7fff_ffff_f000);
+        assert!(rsp >= USER_STACK_TOP - USER_STACK_PAGES * FRAME_SIZE);
+        assert!(rsp < USER_STACK_TOP);
     }
 
     #[test]
