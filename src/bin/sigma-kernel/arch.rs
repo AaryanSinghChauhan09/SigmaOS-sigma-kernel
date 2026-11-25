@@ -105,3 +105,21 @@ impl kernel::console::ScreenBuf for VgaBuf {
         kernel::console::CELLS
     }
 }
+
+/* ---- Physical memory access for usermem page tables ---- */
+
+/// Identity-mapped physical memory — the kernel maps phys==virt in
+/// the low 1 GiB, so a phys addr is directly dereferenceable.
+pub struct IdentityPhysMem;
+
+impl kernel::usermem::PhysMem for IdentityPhysMem {
+    fn write_u64(&mut self, phys: u64, val: u64) {
+        // SAFETY: low-1GiB identity map covers all frame addresses we
+        // hand out; phys is 4K-aligned from the frame allocator.
+        unsafe { (phys as *mut u64).write_volatile(val) }
+    }
+    fn read_u64(&self, phys: u64) -> u64 {
+        // SAFETY: same identity-map argument as write_u64.
+        unsafe { (phys as *const u64).read_volatile() }
+    }
+}
