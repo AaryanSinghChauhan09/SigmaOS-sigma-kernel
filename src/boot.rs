@@ -58,6 +58,8 @@ pub struct BootInfo {
     pub cmdline: Option<alloc::string::String>,
     /// Boot modules (e.g. initrd) as (paddr, size) pairs.
     pub modules: Vec<(u64, u64)>,
+    /// PCI device MMIO base addresses (bar0: device_id).
+    pub pci_devices: Vec<(u64, u32)>,
 }
 
 /// MB2 tag type constants.
@@ -84,7 +86,21 @@ pub fn parse_mb2(bytes: &[u8]) -> Result<BootInfo, KernelError> {
         framebuffer: None,
         cmdline: None,
         modules: Vec::new(),
+        pci_devices: Vec::new(),
     };
+    
+    // Simple PCI scan for VirtIO devices (0x0001-0x0004 range)
+    // In a real kernel this would walk PCI config space; for now we
+    // assume QEMU places VirtIO devices at known MMIO addresses.
+    // QEMU -device virtio-blk-pci,bus=0,addr=0x1 maps to 0xfebf1000
+    let virtio_mmio_bases = [
+        (0xfebf1000u64, 2), // block device
+        (0xfebf2000u64, 1), // network device
+        (0xfebf3000u64, 16), // GPU device
+    ];
+    for (base, device_id) in virtio_mmio_bases {
+        info.pci_devices.push((base, device_id));
+    }
 
     let mut off = 8usize;
     while off + 8 <= total {
