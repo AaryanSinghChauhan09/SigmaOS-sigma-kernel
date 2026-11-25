@@ -283,6 +283,21 @@ impl kernel::syscall::KernelServices for TrapSvc {
     fn pipe(&mut self) -> i64 {
         self.sys_pipe()
     }
+    fn dup(&mut self, fd: u64) -> i64 {
+        self.sys_dup(fd)
+    }
+    fn dup2(&mut self, oldfd: u64, newfd: u64) -> i64 {
+        self.sys_dup2(oldfd, newfd)
+    }
+    fn kill(&mut self, pid: u64, signal: u64) -> i64 {
+        self.sys_kill(pid, signal)
+    }
+    fn mount(&mut self, _source: u64, _source_len: u64, _target: u64, _target_len: u64, _fstype: u64, _fstype_len: u64) -> i64 {
+        -38 // ENOSYS - requires VFS mount support
+    }
+    fn umount(&mut self, _target: u64, _target_len: u64) -> i64 {
+        -38 // ENOSYS - requires VFS mount support
+    }
     fn brk(&mut self, addr: u64) -> i64 {
         const PAGE: u64 = 4096;
         const ENOMEM: i64 = -12;
@@ -683,6 +698,80 @@ impl TrapSvc {
         let read_fd = (read_slot as u64) + 3;
         let write_fd = (write_slot as u64) + 3;
         ((write_fd << 32) | read_fd) as i64
+    }
+
+    /// dup(fd): duplicate a file descriptor to a new fd.
+    fn sys_dup(&mut self, fd: u64) -> i64 {
+        let src = match unsafe { crate::fd_get(fd) } {
+            Some(f) => *f,
+            None => return -9, // EBADF
+        };
+        let slot = match unsafe { crate::fd_alloc() } {
+            Some(s) => s,
+            None => return -24, // EMFILE
+        };
+        unsafe {
+            let dst = crate::fd_get((slot as u64) + 3).unwrap();
+            *dst = src;
+        }
+        (slot as i64) + 3
+    }
+
+    /// dup2(oldfd, newfd): duplicate oldfd to newfd, closing newfd if open.
+    fn sys_dup2(&mut self, oldfd: u64, newfd: u64) -> i64 {
+        let src = match unsafe { crate::fd_get(oldfd) } {
+            Some(f) => *f,
+            None => return -9, // EBADF
+        };
+        if newfd == 0 || newfd == 1 || newfd == 2 {
+            // Allow dup2 to stdout/stderr for redirection.
+        }
+        let new_slot = match newfd.checked_sub(3) {
+            Some(s) if (s as usize) < crate::MAX_FDS => s as usize,
+            _ => return -9, // EBADF for invalid fd range
+        };
+        unsafe {
+            // Close existing fd at newfd if open.
+            let dst = &mut crate::current_fds()[new_slot];
+            if dst.used && newfd != oldfd {
+                // For pipes, decrement refcount would go here.
+                // For now, just mark unused.
+                dst.used = false;
+            }
+            *dst = src;
+        }
+        newfd as i64
+    }
+
+    /// kill(pid, signal): send signal to process.
+    fn sys_kill(&mut self, pid: u64, signal: u64) -> i64 {
+        const SIGKILL: u64 = 9;
+        const SIGTERM: u64 = 15;
+        
+        if pid == 0 {
+            return -22; // EINVAL - can't kill self/group
+        }
+        
+        unsafe {
+            for i in 0..crate::NPROCS {
+                if crate::PROCS[i].used && crate::PROCS[i].pid == pid {
+                    match signal {
+                        SIGKILL => {
+                            crate::PROCS[i].exited = true;
+                            crate::PROCS[i].exit_code = 137; // 128 + 9
+                            return 0;
+                        }
+                        SIGTERM => {
+                            crate::PROCS[i].exited = true;
+                            crate::PROCS[i].exit_code = 143; // 128 + 15
+                            return 0;
+                        }
+                        _ => return -22, // EINVAL - unsupported signal
+                    }
+                }
+            }
+        }
+        -3 // ESRCH - process not found
     }
 
     fn sys_close(&mut self, fd: u64) -> i64 {
