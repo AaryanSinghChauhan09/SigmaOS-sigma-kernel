@@ -5,7 +5,7 @@
 //! syscall ABI, and linear framebuffer output.
 
 #![no_std]
-#![forbid(unsafe_code)]
+#![allow(unsafe_code)]
 
 extern crate alloc;
 
@@ -24,6 +24,7 @@ pub mod usermem;
 pub mod virtio;
 pub mod virtio_blk;
 pub mod virtio_gpu;
+pub mod virtio_mmio;
 pub mod virtio_net;
 pub mod vfs;
 

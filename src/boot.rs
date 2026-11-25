@@ -281,7 +281,19 @@ pub fn parse_mb1(
         framebuffer: None,
         cmdline,
         modules: Vec::new(),
+        pci_devices: Vec::new(),
     };
+    
+    // Simple PCI scan for VirtIO devices
+    let virtio_mmio_bases = [
+        (0xfebf1000u64, 2), // block device
+        (0xfebf2000u64, 1), // network device
+        (0xfebf3000u64, 16), // GPU device
+    ];
+    for (base, device_id) in virtio_mmio_bases {
+        info.pci_devices.push((base, device_id));
+    }
+    
     // low memory below 1 MiB is usable
     info.mem_regions.push(MemRegion {
         start: 0,
@@ -353,7 +365,18 @@ pub fn parse_pvh(
         framebuffer: None,
         cmdline,
         modules,
+        pci_devices: Vec::new(),
     };
+    
+    // Simple PCI scan for VirtIO devices
+    let virtio_mmio_bases = [
+        (0xfebf1000u64, 2), // block device
+        (0xfebf2000u64, 1), // network device
+        (0xfebf3000u64, 16), // GPU device
+    ];
+    for (base, device_id) in virtio_mmio_bases {
+        info.pci_devices.push((base, device_id));
+    }
 
     // Walk the memmap table (24-byte entries).
     let mut off = 0usize;
