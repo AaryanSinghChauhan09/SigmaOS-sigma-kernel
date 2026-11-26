@@ -167,19 +167,19 @@ impl DirEntry {
     /// Get short name as a string (without trailing spaces).
     pub fn short_name(&self) -> alloc::string::String {
         let mut s = alloc::string::String::new();
-        for i in 0..8 {
-            if self.name[i] == b' ' {
+        for &b in &self.name[..8] {
+            if b == b' ' {
                 break;
             }
-            s.push(self.name[i] as char);
+            s.push(b as char);
         }
         if self.name[8] != b' ' {
             s.push('.');
-            for i in 8..11 {
-                if self.name[i] == b' ' {
+            for &b in &self.name[8..11] {
+                if b == b' ' {
                     break;
                 }
-                s.push(self.name[i] as char);
+                s.push(b as char);
             }
         }
         s
