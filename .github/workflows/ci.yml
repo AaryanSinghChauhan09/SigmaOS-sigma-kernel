@@ -37,10 +37,11 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        # the no_std kernel bins need the sigmaos target; the host-checkable surface is the lib
+        run: cargo clippy --lib --all-features -- -D warnings
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --lib --verbose
 
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --lib --verbose
