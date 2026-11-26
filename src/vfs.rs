@@ -316,6 +316,80 @@ impl Vfs {
         Ok(())
     }
 
+    /// Resolve `path` to (parent node index, final component name).
+    /// The final component must not exist yet is NOT required — the
+    /// parent must exist and be a directory.
+    fn resolve_parent<'a>(&self, path: &'a str) -> Option<(usize, &'a str)> {
+        let trimmed = path.trim_matches('/');
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut parts = trimmed.rsplitn(2, '/');
+        let name = parts.next()?;
+        let parent_path = parts.next();
+        let parent = match parent_path {
+            Some(p) if !p.is_empty() => self.lookup(&format!("/{}", p))?,
+            _ => self.root,
+        };
+        if !self.nodes[parent].is_dir || name.is_empty() {
+            return None;
+        }
+        Some((parent, name))
+    }
+
+    /// Create an empty directory at `path`. Parent must exist.
+    pub fn create_dir(&mut self, path: &str) -> Result<(), KernelError> {
+        let Some((parent, name)) = self.resolve_parent(path) else {
+            return Err(KernelError::Fs("no such directory"));
+        };
+        if self.nodes[parent].children.contains_key(name) {
+            return Err(KernelError::Fs("file exists"));
+        }
+        let idx = self.nodes.len();
+        self.nodes.push(VfsNode {
+            name: name.to_string(),
+            is_dir: true,
+            data: Vec::new(),
+            children: BTreeMap::new(),
+        });
+        self.nodes[parent].children.insert(name.to_string(), idx);
+        Ok(())
+    }
+
+    /// Remove the file at `path`. Fails for directories and root.
+    pub fn unlink(&mut self, path: &str) -> Result<(), KernelError> {
+        let Some((parent, name)) = self.resolve_parent(path) else {
+            return Err(KernelError::Fs("no such file"));
+        };
+        let Some(&idx) = self.nodes[parent].children.get(name) else {
+            return Err(KernelError::Fs("no such file"));
+        };
+        if self.nodes[idx].is_dir {
+            return Err(KernelError::Fs("is a directory"));
+        }
+        self.nodes[parent].children.remove(name);
+        Ok(())
+    }
+
+    /// Remove the empty directory at `path`. Fails for non-empty dirs
+    /// and root.
+    pub fn remove_dir(&mut self, path: &str) -> Result<(), KernelError> {
+        let Some((parent, name)) = self.resolve_parent(path) else {
+            return Err(KernelError::Fs("no such directory"));
+        };
+        let Some(&idx) = self.nodes[parent].children.get(name) else {
+            return Err(KernelError::Fs("no such directory"));
+        };
+        if !self.nodes[idx].is_dir {
+            return Err(KernelError::Fs("not a directory"));
+        }
+        if !self.nodes[idx].children.is_empty() {
+            return Err(KernelError::Fs("directory not empty"));
+        }
+        self.nodes[parent].children.remove(name);
+        Ok(())
+    }
+
     /// Write `data` at byte offset `off` in the file at `path`, growing
     /// the file as needed. Sparse gaps are zero-filled. Returns the
     /// number of bytes written.
@@ -451,6 +525,32 @@ mod tests {
         vfs.create_file("/a/c").unwrap();
         assert_eq!(vfs.file_len("/a/c"), Some(0));
         assert!(vfs.write_at("/a", b"x", 0).is_err()); // is a dir
+    }
+
+    #[test]
+    fn mkdir_unlink_rmdir() {
+        let mut vfs = Vfs::new();
+        vfs.create_dir("/d").unwrap();
+        assert!(vfs.is_dir("/d"));
+        assert!(vfs.create_dir("/d").is_err()); // exists
+        assert!(vfs.create_dir("/d/e/f").is_err()); // /d/e missing
+        vfs.create_dir("/d/e").unwrap();
+        vfs.create_file("/d/e/f").unwrap();
+        assert!(vfs.remove_dir("/d/e").is_err()); // not empty
+        vfs.unlink("/d/e/f").unwrap();
+        assert!(!vfs.exists("/d/e/f"));
+        vfs.remove_dir("/d/e").unwrap();
+        vfs.remove_dir("/d").unwrap();
+        assert!(!vfs.exists("/d"));
+        assert!(vfs.unlink("/d").is_err()); // gone
+    }
+
+    #[test]
+    fn unlink_rejects_dirs() {
+        let mut vfs = Vfs::new();
+        vfs.create_dir("/dir").unwrap();
+        assert!(vfs.unlink("/dir").is_err());
+        assert!(vfs.is_dir("/dir"));
     }
 
     #[test]

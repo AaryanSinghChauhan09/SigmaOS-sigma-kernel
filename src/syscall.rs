@@ -36,7 +36,10 @@ pub mod nr {
     pub const UMOUNT: u64 = 28;
     pub const MEMINFO: u64 = 29;
     pub const PROCINFO: u64 = 30;
-    pub const MAX: u64 = 31;
+    pub const MKDIR: u64 = 31;
+    pub const UNLINK: u64 = 32;
+    pub const RMDIR: u64 = 33;
+    pub const MAX: u64 = 34;
 }
 
 /// Syscall argument registers in order.
@@ -64,6 +67,7 @@ pub fn arity(nr: u64) -> usize {
         nr::DUP => 1,
         nr::DUP2 => 2,
         nr::MOUNT | nr::UMOUNT => 3,
+        nr::MKDIR | nr::UNLINK | nr::RMDIR => 2,
         _ => 0,
     }
 }
@@ -177,6 +181,18 @@ pub trait KernelServices {
     fn umount(&mut self, _target: u64, _target_len: u64) -> i64 {
         ENOSYS
     }
+    /// Create a directory at `path` (user ptr+len).
+    fn mkdir(&mut self, _path_ptr: u64, _path_len: u64) -> i64 {
+        ENOSYS
+    }
+    /// Remove the file at `path` (user ptr+len).
+    fn unlink(&mut self, _path_ptr: u64, _path_len: u64) -> i64 {
+        ENOSYS
+    }
+    /// Remove the empty directory at `path` (user ptr+len).
+    fn rmdir(&mut self, _path_ptr: u64, _path_len: u64) -> i64 {
+        ENOSYS
+    }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -216,6 +232,9 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::KILL => svc.kill(args[0], args[1]),
         nr::MOUNT => svc.mount(args[0], args[1], args[2], args[3], args[4], args[5]),
         nr::UMOUNT => svc.umount(args[0], args[1]),
+        nr::MKDIR => svc.mkdir(args[0], args[1]),
+        nr::UNLINK => svc.unlink(args[0], args[1]),
+        nr::RMDIR => svc.rmdir(args[0], args[1]),
         _ => ENOSYS,
     }
 }

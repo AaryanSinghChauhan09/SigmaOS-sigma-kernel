@@ -347,6 +347,15 @@ impl kernel::syscall::KernelServices for TrapSvc {
     fn umount(&mut self, _target: u64, _target_len: u64) -> i64 {
         -38 // ENOSYS - requires VFS mount support
     }
+    fn mkdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        self.sys_mkdir(p_ptr, p_len)
+    }
+    fn unlink(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        self.sys_unlink(p_ptr, p_len)
+    }
+    fn rmdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        self.sys_rmdir(p_ptr, p_len)
+    }
     fn brk(&mut self, addr: u64) -> i64 {
         const PAGE: u64 = 4096;
         const ENOMEM: i64 = -12;
@@ -553,6 +562,30 @@ pub fn serial_read_byte() -> Option<u8> {
     Some(inb(0x3f8))
 }
 
+/// Decode a (ptr,len) user path argument. The result borrows user
+/// memory and is only valid for the duration of the syscall.
+/// SAFETY: caller guarantees `ptr..ptr+len` is mapped under the
+/// active user CR3.
+unsafe fn user_path(ptr: u64, len: u64) -> Result<&'static str, i64> {
+    if len == 0 || len > 64 {
+        return Err(-22); // EINVAL
+    }
+    let b = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    core::str::from_utf8(b).map_err(|_| -14) // EFAULT
+}
+
+/// Map a VFS error to an errno-style code.
+fn fs_err(e: kernel::KernelError) -> i64 {
+    match e {
+        kernel::KernelError::Fs(m) if m.contains("exists") => -17, // EEXIST
+        kernel::KernelError::Fs(m) if m.contains("no such") => -2, // ENOENT
+        kernel::KernelError::Fs(m) if m.contains("not empty") => -39, // ENOTEMPTY
+        kernel::KernelError::Fs(m) if m.contains("not a directory") => -20, // ENOTDIR
+        kernel::KernelError::Fs(m) if m.contains("is a directory") => -21, // EISDIR
+        _ => -5,                                                   // EIO
+    }
+}
+
 impl TrapSvc {
     /// open(path_ptr,path_len,flags): copy path, check VFS, alloc fd.
     fn sys_open(&mut self, path_ptr: u64, path_len: u64, flags: u64) -> i64 {
@@ -643,6 +676,42 @@ impl TrapSvc {
             f.off += n as u64;
         }
         n as i64
+    }
+
+    /// mkdir(path_ptr,path_len): create a directory in the VFS.
+    fn sys_mkdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        let path = match unsafe { user_path(p_ptr, p_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        match unsafe { crate::sys_vfs_mut() }.create_dir(path) {
+            Ok(()) => 0,
+            Err(e) => fs_err(e),
+        }
+    }
+
+    /// unlink(path_ptr,path_len): remove a file from the VFS.
+    fn sys_unlink(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        let path = match unsafe { user_path(p_ptr, p_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        match unsafe { crate::sys_vfs_mut() }.unlink(path) {
+            Ok(()) => 0,
+            Err(e) => fs_err(e),
+        }
+    }
+
+    /// rmdir(path_ptr,path_len): remove an empty directory from the VFS.
+    fn sys_rmdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        let path = match unsafe { user_path(p_ptr, p_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        match unsafe { crate::sys_vfs_mut() }.remove_dir(path) {
+            Ok(()) => 0,
+            Err(e) => fs_err(e),
+        }
     }
 
     /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file or pipe.
