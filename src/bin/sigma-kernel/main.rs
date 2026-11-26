@@ -441,7 +441,7 @@ pub struct ProcSlot {
     pub pml4: u64,
     pub brk: u64,
     pub frame_count: u16, // Number of user frames allocated (for teardown)
-    pub fds: [FdEnt; 8],  // Per-process file descriptor table
+    pub fds: [FdEnt; MAX_FDS], // Per-process file descriptor table
     /// Working directory (NUL-padded, cwd_len valid bytes).
     pub cwd: [u8; 64],
     pub cwd_len: u8,
@@ -455,8 +455,8 @@ pub struct ProcSlot {
     pub stderr_fd: u64,
 }
 
-const MAX_FDS: usize = 8;
-const MAX_PIPES: usize = 4;
+const MAX_FDS: usize = 32;
+const MAX_PIPES: usize = 8;
 const PIPE_BUF_SIZE: usize = 4096;
 
 /// Fd kinds: regular file, pipe read end, pipe write end.
@@ -499,7 +499,10 @@ pub struct FdEnt {
     pub off: u64,
 }
 
-pub static mut PIPES: [Pipe; MAX_PIPES] = [Pipe::new(), Pipe::new(), Pipe::new(), Pipe::new()];
+pub static mut PIPES: [Pipe; MAX_PIPES] = [
+    Pipe::new(), Pipe::new(), Pipe::new(), Pipe::new(),
+    Pipe::new(), Pipe::new(), Pipe::new(), Pipe::new(),
+];
 
 pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     used: false,
@@ -528,7 +531,7 @@ pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
         path: [0; 64],
         len: 0,
         off: 0,
-    }; 8],
+    }; MAX_FDS],
 }; NPROCS];
 static mut NEXT_PID: u64 = 1;
 /// Index of the currently running process.
@@ -895,7 +898,7 @@ unsafe fn sys_spawn(
     // Optional stdout redirect: out_fd must name a writable fd
     // (file or pipe write end) in the inherited parent table;
     // 0 keeps the parent's setting.
-    let stdout_fd = if out_fd >= 3 && out_fd <= 3 + MAX_FDS as u64 {
+    let stdout_fd = if out_fd >= 3 && out_fd < 3 + MAX_FDS as u64 {
         let f = &PROCS[CUR_PROC].fds[(out_fd - 3) as usize];
         if f.used && (f.kind == FD_FILE && f.write || f.kind == FD_PIPE_WRITE) {
             out_fd
@@ -907,7 +910,7 @@ unsafe fn sys_spawn(
     };
     // stdin redirect: in_fd must name a readable fd in the inherited
     // parent table; 0 keeps the parent's setting.
-    let stdin_fd = if in_fd >= 3 && in_fd <= 3 + MAX_FDS as u64 {
+    let stdin_fd = if in_fd >= 3 && in_fd < 3 + MAX_FDS as u64 {
         let f = &PROCS[CUR_PROC].fds[(in_fd - 3) as usize];
         if f.used {
             in_fd
@@ -918,7 +921,7 @@ unsafe fn sys_spawn(
         PROCS[CUR_PROC].stdin_fd
     };
     // stderr redirect: same validation as stdout_fd.
-    let stderr_fd = if err_fd >= 3 && err_fd <= 3 + MAX_FDS as u64 {
+    let stderr_fd = if err_fd >= 3 && err_fd < 3 + MAX_FDS as u64 {
         let f = &PROCS[CUR_PROC].fds[(err_fd - 3) as usize];
         if f.used && (f.kind == FD_FILE && f.write || f.kind == FD_PIPE_WRITE) {
             err_fd
@@ -1045,7 +1048,7 @@ unsafe fn reap_process(idx: usize) {
             path: [0; 64],
             len: 0,
             off: 0,
-        }; 8],
+        }; MAX_FDS],
     };
 }
 
@@ -1362,7 +1365,7 @@ fn run_init(
                 path: [0; 64],
                 len: 0,
                 off: 0,
-            }; 8],
+            }; MAX_FDS],
         };
         NEXT_PID = 2;
         CUR_PROC = 0;
