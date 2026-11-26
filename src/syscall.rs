@@ -35,7 +35,8 @@ pub mod nr {
     pub const MOUNT: u64 = 27;
     pub const UMOUNT: u64 = 28;
     pub const MEMINFO: u64 = 29;
-    pub const MAX: u64 = 30;
+    pub const PROCINFO: u64 = 30;
+    pub const MAX: u64 = 31;
 }
 
 /// Syscall argument registers in order.
@@ -53,7 +54,7 @@ pub fn arity(nr: u64) -> usize {
         | nr::TIME
         | nr::FORK
         | nr::KILL => 0,
-        nr::RAND | nr::KERNEL_INFO | nr::MEMINFO => 2,
+        nr::RAND | nr::KERNEL_INFO | nr::MEMINFO | nr::PROCINFO => 2,
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
         nr::FB_INFO => 1,

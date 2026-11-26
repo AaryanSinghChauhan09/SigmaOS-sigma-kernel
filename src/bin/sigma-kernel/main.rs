@@ -602,6 +602,7 @@ pub extern "C" fn syscall_trap() -> i64 {
             nr::WAIT => sys_wait(args[0]),
             nr::EXIT => sys_exit(args[0]),
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
+            nr::PROCINFO => sys_procinfo(args[0], args[1]),
             _ => {
                 let mut svc = arch::TrapSvc;
                 kernel::syscall::dispatch(nr, &args, &mut svc)
@@ -808,6 +809,37 @@ unsafe fn sys_meminfo(ptr: u64, len: u64) -> i64 {
     unsafe {
         *(ptr as *mut u64) = total;
         *((ptr + 8) as *mut u64) = free;
+    }
+    0
+}
+
+/// PROCINFO(ptr, len): write NPROCS records of {pid, flags, exit_code}
+/// (24 bytes each) to the user buffer. flags: bit0 exited, bit1
+/// sleeping, bit2 reaped. Unused slots get pid=0. len >= NPROCS*24.
+unsafe fn sys_procinfo(ptr: u64, len: u64) -> i64 {
+    let need = (NPROCS * 24) as u64;
+    if ptr == 0 || len < need {
+        return -22;
+    }
+    // SAFETY: caller validated ptr/len; records written under active CR3.
+    unsafe {
+        for i in 0..NPROCS {
+            let p = &PROCS[i];
+            let rec = ptr + (i * 24) as u64;
+            *(rec as *mut u64) = if p.used { p.pid } else { 0 };
+            let mut flags = 0u64;
+            if p.exited {
+                flags |= 1;
+            }
+            if p.sleeping {
+                flags |= 2;
+            }
+            if p.reaped {
+                flags |= 4;
+            }
+            *((rec + 8) as *mut u64) = flags;
+            *((rec + 16) as *mut u64) = p.exit_code;
+        }
     }
     0
 }
