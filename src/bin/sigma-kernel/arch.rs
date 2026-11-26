@@ -233,6 +233,16 @@ pub struct TrapSvc;
 
 impl kernel::syscall::KernelServices for TrapSvc {
     fn write(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
+        // stdout/stderr redirect: a process spawned with an output fd
+        // sends fd 1/2 writes to that fd (file or pipe) instead of
+        // the console.
+        let mut fd = fd;
+        if fd == 1 || fd == 2 {
+            let out = unsafe { crate::PROCS[crate::CUR_PROC].stdout_fd };
+            if out >= 3 {
+                fd = out;
+            }
+        }
         if fd != 1 && fd != 2 {
             // Check if it's a pipe write fd or a writable file fd.
             if let Some(f) = unsafe { crate::fd_get(fd) } {

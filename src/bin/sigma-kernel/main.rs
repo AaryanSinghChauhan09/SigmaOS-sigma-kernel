@@ -441,6 +441,9 @@ pub struct ProcSlot {
     /// Working directory (NUL-padded, cwd_len valid bytes).
     pub cwd: [u8; 64],
     pub cwd_len: u8,
+    /// fd that receives this process's stdout/stderr writes;
+    /// 0 = console. Set by SPAWN's optional redirect arg.
+    pub stdout_fd: u64,
 }
 
 const MAX_FDS: usize = 8;
@@ -503,6 +506,7 @@ pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     frame_count: 0,
     cwd: [b'/'; 64],
     cwd_len: 1,
+    stdout_fd: 0,
     fds: [FdEnt {
         used: false,
         kind: FD_FILE,
@@ -619,7 +623,7 @@ pub extern "C" fn syscall_trap() -> i64 {
         ];
         use kernel::syscall::nr;
         match nr {
-            nr::SPAWN => sys_spawn(args[0], args[1], args[2]),
+            nr::SPAWN => sys_spawn(args[0], args[1], args[2], args[3]),
             nr::WAIT => sys_wait(args[0]),
             nr::EXIT => sys_exit(args[0]),
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
@@ -651,8 +655,7 @@ unsafe fn setup_argv(
     // AT_RANDOM points at the first string bytes (nonzero data).
     const AUXV_PAIRS: usize = 9;
     // argc + argv[n] + NULL + envp[m] + NULL + auxv[AUXV_PAIRS]
-    let header =
-        8 + (n as u64 + 1) * 8 + (m as u64 + 1) * 8 + (AUXV_PAIRS as u64) * 16;
+    let header = 8 + (n as u64 + 1) * 8 + (m as u64 + 1) * 8 + (AUXV_PAIRS as u64) * 16;
     let all: alloc::vec::Vec<&alloc::vec::Vec<u8>> =
         argv_strs.iter().chain(env_strs.iter()).collect();
     let str_total: u64 = all.iter().map(|s| s.len() as u64 + 1).sum();
@@ -769,7 +772,7 @@ unsafe fn read_spawn_args(
 /// SPAWN(path_ptr, path_len, args_ptr): load an ELF from the VFS into a fresh
 /// address space and context-switch to it. Returns the child pid to
 /// the *parent* (stored in its ctx before the switch).
-unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
+unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64, out_fd: u64) -> i64 {
     if p_len == 0 || p_len > 64 {
         return -22;
     }
@@ -869,6 +872,18 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
     // File offsets are per-fd so copies diverge like dup(); pipe ends
     // share pipe_id so parent/child communicate on the same pipe.
     let pfds = PROCS[CUR_PROC].fds;
+    // Optional stdout redirect: out_fd must name a writable file fd
+    // in the (inherited) parent table; 0 keeps the parent's setting.
+    let stdout_fd = if out_fd >= 3 && out_fd <= 3 + MAX_FDS as u64 {
+        let f = &PROCS[CUR_PROC].fds[(out_fd - 3) as usize];
+        if f.used && f.kind == FD_FILE && f.write {
+            out_fd
+        } else {
+            PROCS[CUR_PROC].stdout_fd
+        }
+    } else {
+        PROCS[CUR_PROC].stdout_fd
+    };
     PROCS[slot] = ProcSlot {
         used: true,
         exited: false,
@@ -883,6 +898,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
         frame_count,
         cwd: pcwd,
         cwd_len: pcwd_len,
+        stdout_fd,
         fds: pfds,
     };
     switch_to(slot);
@@ -955,6 +971,7 @@ unsafe fn reap_process(idx: usize) {
         frame_count: 0,
         cwd: [b'/'; 64],
         cwd_len: 1,
+        stdout_fd: 0,
         fds: [FdEnt {
             used: false,
             kind: FD_FILE,
@@ -1260,6 +1277,7 @@ fn run_init(
             frame_count: init_frames,
             cwd: [b'/'; 64],
             cwd_len: 1,
+            stdout_fd: 0,
             fds: [FdEnt {
                 used: false,
                 kind: FD_FILE,
