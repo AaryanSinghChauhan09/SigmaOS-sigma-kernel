@@ -803,8 +803,17 @@ impl TrapSvc {
         n as i64
     }
 
-    /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file or pipe.
+    /// read(fd,ptr,len): fd0=serial or stdin_fd, fd>=3=VFS file or pipe.
     fn sys_read(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
+        // stdin redirect: a process spawned with an input fd reads
+        // fd 0 from that fd (file or pipe) instead of the console.
+        let mut fd = fd;
+        if fd == 0 {
+            let inp = unsafe { crate::PROCS[crate::CUR_PROC].stdin_fd };
+            if inp >= 3 {
+                fd = inp;
+            }
+        }
         if fd == 0 {
             // console input: PS/2 keyboard, then serial RX
             let byte = kbd_read_byte().or_else(serial_read_byte);

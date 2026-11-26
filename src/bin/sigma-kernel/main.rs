@@ -444,6 +444,8 @@ pub struct ProcSlot {
     /// fd that receives this process's stdout/stderr writes;
     /// 0 = console. Set by SPAWN's optional redirect arg.
     pub stdout_fd: u64,
+    /// fd that feeds this process's stdin reads; 0 = console.
+    pub stdin_fd: u64,
 }
 
 const MAX_FDS: usize = 8;
@@ -507,6 +509,7 @@ pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     cwd: [b'/'; 64],
     cwd_len: 1,
     stdout_fd: 0,
+    stdin_fd: 0,
     fds: [FdEnt {
         used: false,
         kind: FD_FILE,
@@ -623,7 +626,7 @@ pub extern "C" fn syscall_trap() -> i64 {
         ];
         use kernel::syscall::nr;
         match nr {
-            nr::SPAWN => sys_spawn(args[0], args[1], args[2], args[3]),
+            nr::SPAWN => sys_spawn(args[0], args[1], args[2], args[3], args[4]),
             nr::WAIT => sys_wait(args[0]),
             nr::EXIT => sys_exit(args[0]),
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
@@ -772,7 +775,7 @@ unsafe fn read_spawn_args(
 /// SPAWN(path_ptr, path_len, args_ptr): load an ELF from the VFS into a fresh
 /// address space and context-switch to it. Returns the child pid to
 /// the *parent* (stored in its ctx before the switch).
-unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64, out_fd: u64) -> i64 {
+unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64, out_fd: u64, in_fd: u64) -> i64 {
     if p_len == 0 || p_len > 64 {
         return -22;
     }
@@ -884,6 +887,18 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64, out_fd: u64) -> i64 {
     } else {
         PROCS[CUR_PROC].stdout_fd
     };
+    // stdin redirect: in_fd must name a readable fd in the inherited
+    // parent table; 0 keeps the parent's setting.
+    let stdin_fd = if in_fd >= 3 && in_fd <= 3 + MAX_FDS as u64 {
+        let f = &PROCS[CUR_PROC].fds[(in_fd - 3) as usize];
+        if f.used {
+            in_fd
+        } else {
+            PROCS[CUR_PROC].stdin_fd
+        }
+    } else {
+        PROCS[CUR_PROC].stdin_fd
+    };
     PROCS[slot] = ProcSlot {
         used: true,
         exited: false,
@@ -899,6 +914,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64, out_fd: u64) -> i64 {
         cwd: pcwd,
         cwd_len: pcwd_len,
         stdout_fd,
+        stdin_fd,
         fds: pfds,
     };
     switch_to(slot);
@@ -972,6 +988,7 @@ unsafe fn reap_process(idx: usize) {
         cwd: [b'/'; 64],
         cwd_len: 1,
         stdout_fd: 0,
+        stdin_fd: 0,
         fds: [FdEnt {
             used: false,
             kind: FD_FILE,
@@ -1278,6 +1295,7 @@ fn run_init(
             cwd: [b'/'; 64],
             cwd_len: 1,
             stdout_fd: 0,
+            stdin_fd: 0,
             fds: [FdEnt {
                 used: false,
                 kind: FD_FILE,
