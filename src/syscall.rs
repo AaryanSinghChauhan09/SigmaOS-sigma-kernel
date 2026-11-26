@@ -48,7 +48,7 @@ pub const ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "r10", "r8", "r9"];
 /// Number of syscall arguments each syscall takes.
 pub fn arity(nr: u64) -> usize {
     match nr {
-        nr::READ | nr::WRITE | nr::OPEN | nr::STAT | nr::SPAWN | nr::WAIT | nr::PIPE => 3,
+        nr::READ | nr::WRITE | nr::OPEN | nr::SPAWN | nr::WAIT | nr::PIPE => 3,
         nr::CLOSE
         | nr::EXIT
         | nr::GETPID
@@ -61,7 +61,7 @@ pub fn arity(nr: u64) -> usize {
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
         nr::FB_INFO => 1,
-        nr::LISTDIR => 4,
+        nr::LISTDIR | nr::STAT => 4,
         nr::FB_PUTPIXEL => 4,
         nr::EXEC => 3,
         nr::DUP => 1,
@@ -105,6 +105,11 @@ pub trait KernelServices {
     /// List directory `path` (ptr+len) into user `buf` (ptr+len).
     /// Returns bytes written or -errno.
     fn listdir(&mut self, _p_ptr: u64, _p_len: u64, _b_ptr: u64, _b_len: u64) -> i64 {
+        ENOSYS
+    }
+    /// Stat `path` (ptr+len) into user `buf` (ptr+len); returns bytes
+    /// written or -errno. Buffer layout: [u64 mode, u64 size].
+    fn stat(&mut self, _p_ptr: u64, _p_len: u64, _b_ptr: u64, _b_len: u64) -> i64 {
         ENOSYS
     }
     /// Copy kernel version into user `ptr` (up to `len`); returns len.
@@ -217,6 +222,7 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::READ => svc.read(args[0], args[1], args[2]),
         nr::CLOSE => svc.close(args[0]),
         nr::LISTDIR => svc.listdir(args[0], args[1], args[2], args[3]),
+        nr::STAT => svc.stat(args[0], args[1], args[2], args[3]),
         nr::KERNEL_INFO => svc.kernel_info(args[0], args[1]),
         nr::TIME => svc.time(),
         nr::RAND => svc.rand(args[0], args[1]),

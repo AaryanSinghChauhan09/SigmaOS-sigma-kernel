@@ -286,6 +286,9 @@ impl kernel::syscall::KernelServices for TrapSvc {
     fn listdir(&mut self, p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
         self.sys_listdir(p_ptr, p_len, b_ptr, b_len)
     }
+    fn stat(&mut self, p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
+        self.sys_stat(p_ptr, p_len, b_ptr, b_len)
+    }
     fn kernel_info(&mut self, ptr: u64, len: u64) -> i64 {
         let v = kernel::KERNEL_VERSION.as_bytes();
         let n = (v.len()).min(len as usize);
@@ -676,6 +679,33 @@ impl TrapSvc {
             f.off += n as u64;
         }
         n as i64
+    }
+
+    /// stat(path_ptr,path_len,buf_ptr,buf_len): write {u64 mode, u64
+    /// size} — mode uses Linux-ish bits (0o040755 dir / 0o100644 file).
+    fn sys_stat(&mut self, p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
+        if b_len < 16 {
+            return -22; // EINVAL
+        }
+        let path = match unsafe { user_path(p_ptr, p_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let vfs = unsafe { crate::sys_vfs() };
+        let (is_dir, size) = if vfs.is_dir(path) {
+            (true, 0u64)
+        } else if let Some(n) = vfs.file_len(path) {
+            (false, n)
+        } else {
+            return -2; // ENOENT
+        };
+        let mode: u64 = if is_dir { 0o040755 } else { 0o100644 };
+        // SAFETY: user buf mapped under active CR3; b_len >= 16 checked.
+        unsafe {
+            *(b_ptr as *mut u64) = mode;
+            *((b_ptr + 8) as *mut u64) = size;
+        }
+        16
     }
 
     /// mkdir(path_ptr,path_len): create a directory in the VFS.
