@@ -647,8 +647,12 @@ unsafe fn setup_argv(
     if n == 0 || n > 16 || m > 32 {
         return Err(-22);
     }
-    // argc + argv[n] + NULL + envp[m] + NULL
-    let header = 8 + (n as u64 + 1) * 8 + (m as u64 + 1) * 8;
+    // Auxiliary vector: 8 pairs + AT_NULL terminator.
+    // AT_RANDOM points at the first string bytes (nonzero data).
+    const AUXV_PAIRS: usize = 9;
+    // argc + argv[n] + NULL + envp[m] + NULL + auxv[AUXV_PAIRS]
+    let header =
+        8 + (n as u64 + 1) * 8 + (m as u64 + 1) * 8 + (AUXV_PAIRS as u64) * 16;
     let all: alloc::vec::Vec<&alloc::vec::Vec<u8>> =
         argv_strs.iter().chain(env_strs.iter()).collect();
     let str_total: u64 = all.iter().map(|s| s.len() as u64 + 1).sum();
@@ -660,6 +664,11 @@ unsafe fn setup_argv(
     let mut block = alloc::vec::Vec::with_capacity(block_len as usize);
     block.extend_from_slice(&(n as u64).to_le_bytes());
     for _ in 0..n + 1 + m + 1 {
+        block.extend_from_slice(&0u64.to_le_bytes());
+    }
+    // auxv placeholder — patched below once string offsets are known.
+    let auxv_at = block.len();
+    for _ in 0..AUXV_PAIRS * 2 {
         block.extend_from_slice(&0u64.to_le_bytes());
     }
     let mut offs = alloc::vec::Vec::with_capacity(all.len());
@@ -677,6 +686,33 @@ unsafe fn setup_argv(
             8 + (n + 1) * 8 + (i - n) * 8
         };
         block[at..at + 8].copy_from_slice(&va.to_le_bytes());
+    }
+    // Fill the auxv: standard Linux AT_* keys. AT_RANDOM points at
+    // arg0's bytes — nonzero stack data, 16 readable bytes guaranteed.
+    const AT_PAGESZ: u64 = 6;
+    const AT_ENTRY: u64 = 9;
+    const AT_UID: u64 = 11;
+    const AT_EUID: u64 = 12;
+    const AT_GID: u64 = 13;
+    const AT_EGID: u64 = 14;
+    const AT_SECURE: u64 = 23;
+    const AT_RANDOM: u64 = 25;
+    const AT_NULL: u64 = 0;
+    let pairs: [(u64, u64); AUXV_PAIRS] = [
+        (AT_PAGESZ, 4096),
+        (AT_ENTRY, img.entry),
+        (AT_UID, 0),
+        (AT_EUID, 0),
+        (AT_GID, 0),
+        (AT_EGID, 0),
+        (AT_SECURE, 0),
+        (AT_RANDOM, start_va + offs[0]),
+        (AT_NULL, 0),
+    ];
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        let at = auxv_at + i * 16;
+        block[at..at + 8].copy_from_slice(&k.to_le_bytes());
+        block[at + 8..at + 16].copy_from_slice(&v.to_le_bytes());
     }
     let dst_phys = img.stack_phys + (start_va - stack_lo);
     // SAFETY: dst_phys is inside the freshly allocated child stack.
