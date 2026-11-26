@@ -8,7 +8,7 @@
 //! `fs/binfmt_elf.c` `load_elf_binary` and the rust-vmm
 //! `vm-memory` GuestMemory model.
 
-use crate::elf::{image_span, load_segments, parse_header, LoadSegment, ET_DYN};
+use crate::elf::{image_span, load_segments, parse_header, LoadSegment};
 use crate::error::KernelError;
 use crate::mm::{FrameAllocator, FRAME_SIZE};
 use alloc::vec::Vec;
@@ -44,17 +44,21 @@ pub struct UserImage {
     pub vaddr_hi: u64,
 }
 
-/// Default user stack size: 8 pages (32 KiB) — plenty for sigma-sh.
-pub const USER_STACK_PAGES: u64 = 8;
+/// Default user stack size: 64 pages (256 KiB). Rust call chains in
+/// the shell (format machinery, large stack structs) overflow the
+/// old 32 KiB window before main even prints.
+pub const USER_STACK_PAGES: u64 = 64;
 
 /// User stack top virtual address — a fixed low window at 8 MiB,
 /// inside the user CR3's low-1GiB map and clear of the load bias.
 pub const USER_STACK_TOP: u64 = 0x800000 + USER_STACK_PAGES * FRAME_SIZE;
 
-/// Virtual base for ET_DYN (PIE) user images — 4 MiB, inside the
-/// second 2 MiB slot so it never collides with the kernel's first
-/// 2 MiB of identity-mapped memory.
-pub const USER_LOAD_BIAS: u64 = 0x400000;
+/// Lowest user virtual address — the first 2 MiB slot above the
+/// kernel image. The kernel's .text/.data/.bss span roughly
+/// 0x100000..0x540000, so user pages must live at 0x600000 or higher
+/// or their page-table slot would unmap kernel memory under the
+/// user CR3.
+pub const USER_LOAD_BASE: u64 = 0x600000;
 
 fn page_align_down(x: u64) -> u64 {
     x & !(FRAME_SIZE - 1)
@@ -79,14 +83,13 @@ pub fn load_image(image: &[u8], alloc: &mut FrameAllocator) -> Result<UserImage,
     let segs = load_segments(image, &hdr)?;
     let (lo, hi) = image_span(&segs);
 
-    // ET_DYN (PIE) images are linked at base 0 — relocate them to a
-    // user bias clear of the kernel's low identity map so user pages
-    // never overlap kernel memory. ET_EXEC keeps its linked vaddrs.
-    let bias = if hdr.etype == ET_DYN {
-        USER_LOAD_BIAS
-    } else {
-        0
-    };
+    // Relocate every image so its lowest vaddr lands at USER_LOAD_BASE.
+    // ET_DYN links at base 0 -> bias is USER_LOAD_BASE; ET_EXEC keeps
+    // its linked vaddrs shifted by the same delta. Without this, an
+    // ET_EXEC image linked inside the kernel's address range would
+    // claim a 2 MiB page-table slot that unmaps kernel memory under
+    // the user CR3.
+    let bias = USER_LOAD_BASE.saturating_sub(lo);
     let mut loaded = Vec::with_capacity(segs.len());
     for s in &segs {
         let mut s2 = s.clone();
@@ -103,8 +106,8 @@ pub fn load_image(image: &[u8], alloc: &mut FrameAllocator) -> Result<UserImage,
         segments: loaded,
         stack_phys,
         stack_pages: USER_STACK_PAGES,
-        vaddr_lo: lo,
-        vaddr_hi: hi,
+        vaddr_lo: lo + bias,
+        vaddr_hi: hi + bias,
     })
 }
 
@@ -250,7 +253,8 @@ mod tests {
     fn loads_segments_into_frames() {
         let mut a = test_alloc();
         let user = load_image(&elf_image(), &mut a).unwrap();
-        assert_eq!(user.entry, 0x401000);
+        // ET_EXEC vaddr 0x400000 relocates to USER_LOAD_BASE.
+        assert_eq!(user.entry, USER_LOAD_BASE + 0x1000);
         assert_eq!(user.segments.len(), 1);
         let s = &user.segments[0];
         assert_eq!(s.phys % FRAME_SIZE, 0);
@@ -271,14 +275,14 @@ mod tests {
         let mut a = test_alloc();
         let user = load_image(&elf_image(), &mut a).unwrap();
         let maps = user_mappings(&user);
-        // 2 seg pages + 8 stack pages
-        assert_eq!(maps.len(), 10);
+        // 2 seg pages + USER_STACK_PAGES stack pages
+        assert_eq!(maps.len(), 2 + USER_STACK_PAGES as usize);
         // all have USER bit (bit 2 = 4)
         assert!(maps.iter().all(|&(_, _, f)| f & 4 != 0));
         // stack pages are writable
         let stack_maps: Vec<_> = maps
             .iter()
-            .filter(|(v, _, _)| *v >= USER_STACK_TOP - 8 * FRAME_SIZE)
+            .filter(|(v, _, _)| *v >= USER_STACK_TOP - USER_STACK_PAGES * FRAME_SIZE)
             .collect();
         assert!(stack_maps.iter().all(|&(_, _, f)| f & 2 != 0));
     }

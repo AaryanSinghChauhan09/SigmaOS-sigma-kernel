@@ -634,7 +634,10 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
     };
     let img = match kernel::process::load_image(elf, alloc) {
         Ok(i) => i,
-        Err(_) => return -12,
+        Err(e) => {
+            arch::log(alloc::format!("sys_spawn: load_image err {:?}\n", e).as_str());
+            return -12;
+        }
     };
     let mut pages = Vec::new();
     for s in &img.segments {
@@ -648,12 +651,15 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
     }
     let tables = match kernel::usermem::build_user_tables(
         &pages,
-        0x200000,
+        kernel::process::USER_LOAD_BASE,
         alloc,
         &mut arch::IdentityPhysMem,
     ) {
         Ok(t) => t,
-        Err(_) => return -12,
+        Err(e) => {
+            arch::log(alloc::format!("sys_spawn: tables err {:?}\n", e).as_str());
+            return -12;
+        }
     };
     for s in &img.segments {
         let len = (s.frames * 4096) as usize;
@@ -662,9 +668,18 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         if kernel::process::materialize_with_offset(elf, s.offset, s.filesz, s.memsz, s.delta, dst)
             .is_err()
         {
+            arch::log("sys_spawn: materialize err\n");
             return -12;
         }
     }
+    // Zero the user stack — freshly allocated frames are dirty.
+    let st = unsafe {
+        core::slice::from_raw_parts_mut(
+            img.stack_phys as *mut u8,
+            (img.stack_pages * 4096) as usize,
+        )
+    };
+    st.fill(0);
     let pid = NEXT_PID;
     NEXT_PID += 1;
     // Child ctx: fresh register state, entry/rsp/rflags/cr3 set.
@@ -822,10 +837,42 @@ unsafe fn sys_exit(code: u64) -> i64 {
     }
 }
 
+/// End of the loaded kernel image in physical memory. The PVH stub
+/// loads kernel.elf at 0x100000, so its own ELF header is readable
+/// through the identity map; the highest PT_LOAD vaddr+memsz is the
+/// true extent — .bss pushes it well past 2 MiB.
+fn kernel_image_end() -> u64 {
+    // SAFETY: kernel ELF header sits at phys/virt 0x100000.
+    unsafe {
+        let base = 0x100000u64 as *const u8;
+        let phoff = (base.add(0x20) as *const u64).read_unaligned();
+        let phentsize = (base.add(0x36) as *const u16).read_unaligned() as usize;
+        let phnum = (base.add(0x38) as *const u16).read_unaligned() as usize;
+        let mut end = 0x100000u64 + 0x200000; // fallback: 3 MiB
+        for i in 0..phnum {
+            let ph = base.add(phoff as usize + i * phentsize);
+            if (ph as *const u32).read_unaligned() != 1 {
+                continue; // PT_LOAD only
+            }
+            let vaddr = (ph.add(16) as *const u64).read_unaligned();
+            let memsz = (ph.add(40) as *const u64).read_unaligned();
+            end = end.max(vaddr + memsz);
+        }
+        end
+    }
+}
+
 /// Physical ranges the user allocator must never hand out:
 /// the kernel image and every boot module (initramfs).
 fn reserved_ranges(bi: &kernel::boot::BootInfo) -> Vec<(u64, u64)> {
-    let mut r = vec![(0x100000u64, 0x100000u64)]; // kernel: 1-2 MiB
+    let kbase = 0x100000u64;
+    let kend = kernel_image_end();
+    let mut r = vec![
+        (kbase, kend),
+        // Legacy ISA hole: VGA memory + option ROM/BIOS area. Reads
+        // return 0xff and writes are dropped — never allocator material.
+        (0xa0000, 0x100000),
+    ];
     for &(p, sz) in &bi.modules {
         r.push((p, p + sz));
     }
@@ -917,7 +964,7 @@ fn run_init(
 
     let tables = match kernel::usermem::build_user_tables(
         &pages,
-        0x200000,
+        kernel::process::USER_LOAD_BASE,
         &mut alloc,
         &mut arch::IdentityPhysMem,
     ) {
@@ -952,6 +999,15 @@ fn run_init(
             }
         }
     }
+
+    // Zero the user stack — freshly allocated frames are dirty.
+    let st = unsafe {
+        core::slice::from_raw_parts_mut(
+            img.stack_phys as *mut u8,
+            (img.stack_pages * 4096) as usize,
+        )
+    };
+    st.fill(0);
 
     unsafe {
         USER_PML4 = tables.cr3;

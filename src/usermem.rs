@@ -64,8 +64,16 @@ pub struct UserTables {
     pub pages: Vec<TablePage>,
 }
 
-fn alloc_table(alloc: &mut FrameAllocator) -> Result<TablePage, KernelError> {
+fn alloc_table(
+    alloc: &mut FrameAllocator,
+    phys_mem: &mut dyn PhysMem,
+) -> Result<TablePage, KernelError> {
     let phys = alloc.alloc_frame().ok_or(KernelError::OutOfMemory)?;
+    // Frames are recycled dirty — a page table must start zeroed or
+    // garbage entries become phantom mappings.
+    for i in 0..PT_ENTRIES {
+        phys_mem.write_u64(phys + i as u64 * 8, 0);
+    }
     Ok(TablePage::zeroed(phys))
 }
 
@@ -92,7 +100,7 @@ fn ensure_pd(
     // PML4[pi] -> PDPT
     let mut pdpt = get_entry(phys_mem, pml4, pi);
     if pdpt & P_PRESENT == 0 {
-        let t = alloc_table(alloc)?;
+        let t = alloc_table(alloc, phys_mem)?;
         pdpt = t.phys | P_PRESENT | P_WRITE | P_USER;
         set_entry(phys_mem, pml4, pi, pdpt);
     }
@@ -101,7 +109,7 @@ fn ensure_pd(
     // PDPT[di] -> PD
     let mut pd = get_entry(phys_mem, pdpt_addr, di);
     if pd & P_PRESENT == 0 {
-        let t = alloc_table(alloc)?;
+        let t = alloc_table(alloc, phys_mem)?;
         pd = t.phys | P_PRESENT | P_WRITE | P_USER;
         set_entry(phys_mem, pdpt_addr, di, pd);
     }
@@ -139,7 +147,7 @@ pub fn map_4k_user(
     // callers must not mix 2 MiB and 4K maps in the same PD entry.
     let pd_entry = get_entry(phys_mem, pd, mi);
     let pt_addr = if pd_entry & P_PRESENT == 0 {
-        let t = alloc_table(alloc)?;
+        let t = alloc_table(alloc, phys_mem)?;
         let a = t.phys | P_PRESENT | P_WRITE | P_USER;
         set_entry(phys_mem, pd, mi, a);
         t.phys
@@ -177,12 +185,12 @@ pub fn build_user_tables(
     phys_mem: &mut dyn PhysMem,
 ) -> Result<UserTables, KernelError> {
     let mut tables = Vec::new();
-    let pml4_t = alloc_table(alloc)?;
+    let pml4_t = alloc_table(alloc, phys_mem)?;
     tables.push(pml4_t);
     let pml4 = pml4_t.phys;
 
     // PML4[0] -> PDPT for low half
-    let pdpt_t = alloc_table(alloc)?;
+    let pdpt_t = alloc_table(alloc, phys_mem)?;
     tables.push(pdpt_t);
     set_entry(
         phys_mem,
@@ -193,7 +201,7 @@ pub fn build_user_tables(
     let pdpt = pdpt_t.phys;
 
     // PDPT[0] -> PD covering 0..1 GiB
-    let pd_t = alloc_table(alloc)?;
+    let pd_t = alloc_table(alloc, phys_mem)?;
     tables.push(pd_t);
     set_entry(phys_mem, pdpt, 0, pd_t.phys | P_PRESENT | P_WRITE | P_USER);
     let pd = pd_t.phys;
@@ -215,7 +223,7 @@ pub fn build_user_tables(
             return Err(KernelError::InvalidArg("user pages overlap kernel slot"));
         }
         // PT for this slot's 512 4K pages.
-        let pt_t = alloc_table(alloc)?;
+        let pt_t = alloc_table(alloc, phys_mem)?;
         tables.push(pt_t);
         let (_, _, mi, _) = indices(*slot);
         set_entry(phys_mem, pd, mi, pt_t.phys | P_PRESENT | P_WRITE | P_USER);
@@ -267,12 +275,12 @@ pub fn map_user_page(
     // PD[mi]: 2 MiB supervisor page -> split into a PT.
     let mut pd_e = get_entry(phys_mem, pd, mi);
     if pd_e & P_PRESENT == 0 {
-        let pt_t = alloc_table(alloc)?;
+        let pt_t = alloc_table(alloc, phys_mem)?;
         pd_e = pt_t.phys | P_PRESENT | P_WRITE | P_USER;
         set_entry(phys_mem, pd, mi, pd_e);
     } else if pd_e & P_PS != 0 {
         let slot_base = (pd_e & !0xfff) & !((2 << 20) - 1);
-        let pt_t = alloc_table(alloc)?;
+        let pt_t = alloc_table(alloc, phys_mem)?;
         for i in 0..PT_ENTRIES {
             let leaf = (slot_base + i as u64 * FRAME) | P_PRESENT | P_WRITE;
             set_entry(phys_mem, pt_t.phys, i, leaf);

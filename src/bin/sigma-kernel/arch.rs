@@ -134,11 +134,19 @@ pub struct IdentityPhysMem;
 
 impl kernel::usermem::PhysMem for IdentityPhysMem {
     fn write_u64(&mut self, phys: u64, val: u64) {
+        if phys >= 0x4000_0000 {
+            log(&alloc::format!("physmem: bad write phys={:#x} val={:#x}\n", phys, val));
+            return;
+        }
         // SAFETY: low-1GiB identity map covers all frame addresses we
         // hand out; phys is 4K-aligned from the frame allocator.
         unsafe { (phys as *mut u64).write_volatile(val) }
     }
     fn read_u64(&self, phys: u64) -> u64 {
+        if phys >= 0x4000_0000 {
+            log(&alloc::format!("physmem: bad read phys={:#x}\n", phys));
+            return 0;
+        }
         // SAFETY: same identity-map argument as write_u64.
         unsafe { (phys as *const u64).read_volatile() }
     }

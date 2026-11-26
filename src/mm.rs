@@ -94,27 +94,37 @@ impl FrameAllocator {
     }
 
     /// Allocate `n` contiguous frames.
+    ///
+    /// "Contiguous" means contiguous *physical* addresses: frame indices
+    /// are dense across `MemRegion` boundaries but physical addresses are
+    /// not, so a run that crosses a region boundary is rejected.
     pub fn alloc_contiguous(&mut self, n: u64) -> Option<u64> {
         let mut run_start: Option<u64> = None;
         let mut run = 0u64;
         for idx in 0..self.total_frames {
-            let free = self.is_free(idx);
-            if free {
-                if run_start.is_none() {
-                    run_start = Some(idx);
-                }
-                run += 1;
-                if run == n {
-                    let start = run_start.unwrap();
-                    for i in start..start + n {
-                        self.clear_bit(i);
-                    }
-                    self.free_frames -= n;
-                    return Some(self.frame_to_phys(start));
-                }
-            } else {
+            if !self.is_free(idx) {
                 run_start = None;
                 run = 0;
+                continue;
+            }
+            let extends = match run_start {
+                Some(s) => {
+                    self.frame_to_phys(idx) == self.frame_to_phys(s) + run * FRAME_SIZE
+                }
+                None => false,
+            };
+            if run_start.is_none() || !extends {
+                run_start = Some(idx);
+                run = 0;
+            }
+            run += 1;
+            if run == n {
+                let start = run_start.unwrap();
+                for i in start..start + n {
+                    self.clear_bit(i);
+                }
+                self.free_frames -= n;
+                return Some(self.frame_to_phys(start));
             }
         }
         None
@@ -196,6 +206,21 @@ mod tests {
         let p = a.alloc_contiguous(4).unwrap();
         assert_eq!(p % FRAME_SIZE, 0);
         assert_eq!(a.free_frames(), 12);
+    }
+
+    #[test]
+    fn contiguous_alloc_never_crosses_region_gap() {
+        // Two regions with a physical gap: indices are dense across the
+        // boundary but physical addresses are not, so a contiguous run
+        // must not span it.
+        let regs = [region(0x100000, 0x4000), region(0x200000, 0x4000)];
+        let mut a = FrameAllocator::new(&regs).unwrap();
+        assert!(a.alloc_contiguous(8).is_none());
+        // A run that fits inside one region still works.
+        let p = a.alloc_contiguous(2).unwrap();
+        assert!(p == 0x100000 || p == 0x200000);
+        // Frame indices 0..7 are dense; phys 0x100000+4*0x1000 would be
+        // 0x104000 which is NOT the next allocated frame (gap to 0x200000).
     }
 
     #[test]
