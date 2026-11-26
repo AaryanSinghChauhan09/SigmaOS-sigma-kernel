@@ -611,43 +611,50 @@ pub extern "C" fn syscall_trap() -> i64 {
     }
 }
 
-/// Build the initial stack image {argc, argv[], NULL, envp NULL,
+/// Build the initial stack image {argc, argv[], NULL, envp[], NULL,
 /// strings...} at the top of the child's stack and return the initial
-/// user rsp pointing at argc. `strings[0]` is argv[0] (the path).
+/// user rsp pointing at argc. `argv_strs[0]` is argv[0] (the path).
 /// Writes through the phys identity map — the child CR3 isn't active.
 unsafe fn setup_argv(
     img: &kernel::process::UserImage,
     stack_lo: u64,
-    strings: &[alloc::vec::Vec<u8>],
+    argv_strs: &[alloc::vec::Vec<u8>],
+    env_strs: &[alloc::vec::Vec<u8>],
 ) -> Result<u64, i64> {
-    let n = strings.len();
-    if n == 0 || n > 16 {
+    let n = argv_strs.len();
+    let m = env_strs.len();
+    if n == 0 || n > 16 || m > 32 {
         return Err(-22);
     }
-    let header = 8 + (n as u64 + 1) * 8 + 8; // argc + argv + NULL + envp NULL
-    let str_total: u64 = strings.iter().map(|s| s.len() as u64 + 1).sum();
+    // argc + argv[n] + NULL + envp[m] + NULL
+    let header = 8 + (n as u64 + 1) * 8 + (m as u64 + 1) * 8;
+    let all: alloc::vec::Vec<&alloc::vec::Vec<u8>> =
+        argv_strs.iter().chain(env_strs.iter()).collect();
+    let str_total: u64 = all.iter().map(|s| s.len() as u64 + 1).sum();
     let block_len = (header + str_total + 15) & !15;
     if block_len > img.stack_pages * 4096 {
         return Err(-12);
     }
     let start_va = kernel::process::USER_STACK_TOP - block_len;
     let mut block = alloc::vec::Vec::with_capacity(block_len as usize);
-    // placeholder header; pointers patched after layout is known
-    let argc_pos = block.len();
     block.extend_from_slice(&(n as u64).to_le_bytes());
-    for _ in 0..n + 2 {
+    for _ in 0..n + 1 + m + 1 {
         block.extend_from_slice(&0u64.to_le_bytes());
     }
-    let mut offs = alloc::vec::Vec::with_capacity(n);
-    for s in strings {
+    let mut offs = alloc::vec::Vec::with_capacity(all.len());
+    for s in &all {
         offs.push(block.len() as u64);
         block.extend_from_slice(s);
         block.push(0);
     }
-    // patch argv pointers: string i lives at start_va + off
+    // patch pointers: argv[i] at 8+i*8, envp[j] at 8+(n+1)*8+j*8
     for (i, off) in offs.iter().enumerate() {
         let va = start_va + off;
-        let at = argc_pos + 8 + i * 8;
+        let at = if i < n {
+            8 + i * 8
+        } else {
+            8 + (n + 1) * 8 + (i - n) * 8
+        };
         block[at..at + 8].copy_from_slice(&va.to_le_bytes());
     }
     let dst_phys = img.stack_phys + (start_va - stack_lo);
@@ -658,29 +665,47 @@ unsafe fn setup_argv(
     Ok(start_va)
 }
 
-/// Read the SPAWN args descriptor from parent memory (still the active
-/// CR3): {u64 argc, argc x {u64 ptr, u64 len}}. Returns arg byte vecs.
-unsafe fn read_spawn_args(args_ptr: u64) -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, i64> {
+/// Read {argc, args..., envc, envs...} descriptors from parent memory
+/// (still the active CR3). Returns (argv strings, env strings).
+unsafe fn read_spawn_args(
+    args_ptr: u64,
+) -> Result<
+    (
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    ),
+    i64,
+> {
     if args_ptr == 0 {
-        return Ok(alloc::vec::Vec::new());
+        return Ok((alloc::vec::Vec::new(), alloc::vec::Vec::new()));
     }
     // SAFETY: args_ptr is a parent user VA mapped under the active CR3.
-    let n = unsafe { *(args_ptr as *const u64) };
+    let n = unsafe { *(args_ptr as *const u64) } as usize;
     if n > 15 {
         return Err(-22);
     }
-    let mut out = alloc::vec::Vec::with_capacity(n as usize);
-    for i in 0..n as usize {
-        let d = args_ptr + 8 + (i * 16) as u64;
-        let (p, l) = unsafe { (*(d as *const u64), *((d + 8) as *const u64)) };
-        if l > 1024 {
-            return Err(-22);
+    let mut read_descs = |base: u64, count: usize| -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, i64> {
+        let mut out = alloc::vec::Vec::with_capacity(count);
+        for i in 0..count {
+            let d = base + (i * 16) as u64;
+            let (p, l) = unsafe { (*(d as *const u64), *((d + 8) as *const u64)) };
+            if l > 1024 {
+                return Err(-22);
+            }
+            // SAFETY: p/l describe a parent user buffer.
+            let bytes = unsafe { core::slice::from_raw_parts(p as *const u8, l as usize) };
+            out.push(bytes.to_vec());
         }
-        // SAFETY: p/l describe a parent user buffer.
-        let bytes = unsafe { core::slice::from_raw_parts(p as *const u8, l as usize) };
-        out.push(bytes.to_vec());
+        Ok(out)
+    };
+    let args = read_descs(args_ptr + 8, n)?;
+    // envc follows the argc descriptors
+    let envc = unsafe { *((args_ptr + 8 + (n * 16) as u64) as *const u64) } as usize;
+    if envc > 32 {
+        return Err(-22);
     }
-    Ok(out)
+    let envs = read_descs(args_ptr + 16 + (n * 16) as u64, envc)?;
+    Ok((args, envs))
 }
 
 /// SPAWN(path_ptr, path_len, args_ptr): load an ELF from the VFS into a fresh
@@ -696,15 +721,15 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
         Ok(s) => s,
         Err(_) => return -14,
     };
-    // argv strings: argv[0] = path, then caller args — all copied out of
-    // parent memory now, before the CR3 switch.
-    let mut arg_vecs = match unsafe { read_spawn_args(args_ptr) } {
+    // argv/env strings: argv[0] = path, then caller args/env — all
+    // copied out of parent memory now, before the CR3 switch.
+    let (mut arg_vecs, env_vecs) = match unsafe { read_spawn_args(args_ptr) } {
         Ok(v) => v,
         Err(e) => return e,
     };
-    let mut strings = alloc::vec::Vec::with_capacity(arg_vecs.len() + 1);
-    strings.push(pb.to_vec());
-    strings.append(&mut arg_vecs);
+    let mut argv_strs = alloc::vec::Vec::with_capacity(arg_vecs.len() + 1);
+    argv_strs.push(pb.to_vec());
+    argv_strs.append(&mut arg_vecs);
     let Some(elf) = (unsafe { sys_vfs() }).read(path) else {
         return -2; // ENOENT
     };
@@ -764,7 +789,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
     };
     st.fill(0);
     // argv block at the top of the child stack; rsp points at argc.
-    let init_rsp = match unsafe { setup_argv(&img, stack_lo, &strings) } {
+    let init_rsp = match unsafe { setup_argv(&img, stack_lo, &argv_strs, &env_vecs) } {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1147,7 +1172,8 @@ fn run_init(
     st.fill(0);
     // /init gets argv[0] = "/init" like any spawned process.
     let init_strings = [b"/init".to_vec()];
-    let init_rsp = match unsafe { setup_argv(&img, stack_lo, &init_strings) } {
+    let no_env: [alloc::vec::Vec<u8>; 0] = [];
+    let init_rsp = match unsafe { setup_argv(&img, stack_lo, &init_strings, &no_env) } {
         Ok(r) => r,
         Err(_) => kernel::process::initial_rsp(&img),
     };
