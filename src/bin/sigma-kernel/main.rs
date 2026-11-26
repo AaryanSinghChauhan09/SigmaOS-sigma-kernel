@@ -829,6 +829,10 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
     let frame_count = (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
     // Children inherit the parent's working directory.
     let (pcwd, pcwd_len) = (PROCS[CUR_PROC].cwd, PROCS[CUR_PROC].cwd_len);
+    // Children inherit a copy of the parent's fd table (fork-style).
+    // File offsets are per-fd so copies diverge like dup(); pipe ends
+    // share pipe_id so parent/child communicate on the same pipe.
+    let pfds = PROCS[CUR_PROC].fds;
     PROCS[slot] = ProcSlot {
         used: true,
         exited: false,
@@ -843,15 +847,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
         frame_count,
         cwd: pcwd,
         cwd_len: pcwd_len,
-        fds: [FdEnt {
-            used: false,
-            kind: FD_FILE,
-            pipe_id: 0,
-            write: false,
-            path: [0; 64],
-            len: 0,
-            off: 0,
-        }; 8],
+        fds: pfds,
     };
     switch_to(slot);
     pid as i64
