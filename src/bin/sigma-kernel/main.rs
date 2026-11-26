@@ -392,7 +392,7 @@ extern "C" {
 }
 
 /// Max concurrent user processes (preemptive round-robin via timer IRQ).
-pub const NPROCS: usize = 4;
+pub const NPROCS: usize = 8;
 
 /// ctx slot indices — must match pvh.asm syscall_entry layout.
 mod cx {
@@ -902,14 +902,13 @@ unsafe fn reap_process(idx: usize) {
         Some(a) => a,
         None => return,
     };
-    // Free the user page tables (PML4 and all subordinate tables).
+    // Free user data frames first (P_USER leaves only), then the
+    // page-table pages themselves.
     let pml4 = PROCS[idx].pml4;
     if pml4 != 0 {
+        kernel::usermem::free_user_frames(pml4, alloc, &mut arch::IdentityPhysMem);
         kernel::usermem::free_user_tables(pml4, alloc, &mut arch::IdentityPhysMem);
     }
-    // Note: user data frames are tracked but not yet freed because
-    // we don't have a per-process frame list. This is a known gap.
-    // For now, we just mark the slot as unused.
     PROCS[idx] = ProcSlot {
         used: false,
         exited: false,

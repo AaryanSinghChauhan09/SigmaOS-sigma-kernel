@@ -327,6 +327,38 @@ pub fn user_pte(pml4: u64, vaddr: u64, phys_mem: &dyn PhysMem) -> Option<(u64, u
     Some((pte_addr, e))
 }
 
+/// Free every user data frame mapped under a user CR3.
+/// Walks PML4[0]->PDPT[0]->PD (the only chain `build_user_tables`
+/// creates) and releases each present PTE leaf that has `P_USER`.
+/// Supervisor 2 MiB PD entries (`P_PS`) and supervisor 4K leaves left
+/// by `map_user_page` splits are skipped. Must run BEFORE
+/// `free_user_tables`, which releases the table pages themselves.
+pub fn free_user_frames(pml4: u64, alloc: &mut FrameAllocator, phys_mem: &mut dyn PhysMem) {
+    let pdpt_e = get_entry(phys_mem, pml4, 0);
+    if pdpt_e & P_PRESENT == 0 {
+        return;
+    }
+    let pd_e = get_entry(phys_mem, pdpt_e & !0xfff, 0);
+    if pd_e & P_PRESENT == 0 {
+        return;
+    }
+    let pd = pd_e & !0xfff;
+    for mi in 0..PT_ENTRIES {
+        let pde = get_entry(phys_mem, pd, mi);
+        // Skip absent entries and 2 MiB supervisor pages.
+        if pde & P_PRESENT == 0 || pde & P_PS != 0 {
+            continue;
+        }
+        let pt = pde & !0xfff;
+        for ti in 0..PT_ENTRIES {
+            let pte = phys_mem.read_u64(pt + ti as u64 * 8);
+            if pte & P_PRESENT != 0 && pte & P_USER != 0 {
+                alloc.free_frame(pte & !0xfff);
+            }
+        }
+    }
+}
+
 /// Free all page-table pages for a user CR3 (PML4, PDPT, PD, PTs).
 /// Does NOT free user data frames — those are the caller's responsibility.
 /// (Linux `pgd_free` + `pud_free` + `pmd_free` + `pte_free` analogue.)
