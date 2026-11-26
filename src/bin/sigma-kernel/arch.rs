@@ -238,7 +238,14 @@ impl kernel::syscall::KernelServices for TrapSvc {
         // the console.
         let mut fd = fd;
         if fd == 1 || fd == 2 {
-            let out = unsafe { crate::PROCS[crate::CUR_PROC].stdout_fd };
+            let slot = unsafe { &crate::PROCS[crate::CUR_PROC] };
+            let out = if fd == 1 {
+                slot.stdout_fd
+            } else if slot.stderr_fd >= 3 {
+                slot.stderr_fd
+            } else {
+                slot.stdout_fd
+            };
             if out >= 3 {
                 fd = out;
             }
