@@ -359,6 +359,12 @@ impl kernel::syscall::KernelServices for TrapSvc {
     fn rmdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
         self.sys_rmdir(p_ptr, p_len)
     }
+    fn chdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        self.sys_chdir(p_ptr, p_len)
+    }
+    fn getcwd(&mut self, b_ptr: u64, b_len: u64) -> i64 {
+        self.sys_getcwd(b_ptr, b_len)
+    }
     fn brk(&mut self, addr: u64) -> i64 {
         const PAGE: u64 = 4096;
         const ENOMEM: i64 = -12;
@@ -742,6 +748,49 @@ impl TrapSvc {
             Ok(()) => 0,
             Err(e) => fs_err(e),
         }
+    }
+
+    /// chdir(path_ptr,path_len): set the current process's cwd.
+    /// Path must be absolute, exist, and be a directory.
+    fn sys_chdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
+        let path = match unsafe { user_path(p_ptr, p_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        if !path.starts_with('/') || path.len() > 63 {
+            return -22; // EINVAL
+        }
+        // Normalize a trailing "/" the way the VFS lookup tolerates it.
+        let norm = path.trim_end_matches('/');
+        let norm = if norm.is_empty() { "/" } else { norm };
+        let vfs = unsafe { crate::sys_vfs() };
+        if !vfs.is_dir(norm) {
+            return -2; // ENOENT
+        }
+        unsafe {
+            let slot = &mut crate::PROCS[crate::CUR_PROC];
+            slot.cwd.fill(0);
+            slot.cwd[..norm.len()].copy_from_slice(norm.as_bytes());
+            slot.cwd_len = norm.len() as u8;
+        }
+        0
+    }
+
+    /// getcwd(buf_ptr,buf_len): write the current process's cwd.
+    fn sys_getcwd(&mut self, b_ptr: u64, b_len: u64) -> i64 {
+        if b_len == 0 {
+            return -22;
+        }
+        let (cwd, len) = unsafe {
+            let s = &crate::PROCS[crate::CUR_PROC];
+            (s.cwd, s.cwd_len as usize)
+        };
+        let n = len.min(b_len as usize);
+        // SAFETY: user buf mapped under active CR3.
+        unsafe {
+            core::ptr::copy_nonoverlapping(cwd.as_ptr(), b_ptr as *mut u8, n);
+        }
+        n as i64
     }
 
     /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file or pipe.

@@ -438,6 +438,9 @@ pub struct ProcSlot {
     pub brk: u64,
     pub frame_count: u16, // Number of user frames allocated (for teardown)
     pub fds: [FdEnt; 8],  // Per-process file descriptor table
+    /// Working directory (NUL-padded, cwd_len valid bytes).
+    pub cwd: [u8; 64],
+    pub cwd_len: u8,
 }
 
 const MAX_FDS: usize = 8;
@@ -498,6 +501,8 @@ pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     pml4: 0,
     brk: 0,
     frame_count: 0,
+    cwd: [b'/'; 64],
+    cwd_len: 1,
     fds: [FdEnt {
         used: false,
         kind: FD_FILE,
@@ -822,6 +827,8 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
     c[cx::FL] = 0x202; // IF=1
     c[cx::CR3] = tables.cr3;
     let frame_count = (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
+    // Children inherit the parent's working directory.
+    let (pcwd, pcwd_len) = (PROCS[CUR_PROC].cwd, PROCS[CUR_PROC].cwd_len);
     PROCS[slot] = ProcSlot {
         used: true,
         exited: false,
@@ -834,6 +841,8 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
         pml4: tables.cr3,
         brk: USER_BRK,
         frame_count,
+        cwd: pcwd,
+        cwd_len: pcwd_len,
         fds: [FdEnt {
             used: false,
             kind: FD_FILE,
@@ -913,6 +922,8 @@ unsafe fn reap_process(idx: usize) {
         pml4: 0,
         brk: 0,
         frame_count: 0,
+        cwd: [b'/'; 64],
+        cwd_len: 1,
         fds: [FdEnt {
             used: false,
             kind: FD_FILE,
@@ -1216,6 +1227,8 @@ fn run_init(
             pml4: tables.cr3,
             brk: USER_BRK,
             frame_count: init_frames,
+            cwd: [b'/'; 64],
+            cwd_len: 1,
             fds: [FdEnt {
                 used: false,
                 kind: FD_FILE,
