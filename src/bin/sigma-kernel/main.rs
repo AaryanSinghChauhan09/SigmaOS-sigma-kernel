@@ -598,7 +598,7 @@ pub extern "C" fn syscall_trap() -> i64 {
         ];
         use kernel::syscall::nr;
         match nr {
-            nr::SPAWN => sys_spawn(args[0], args[1]),
+            nr::SPAWN => sys_spawn(args[0], args[1], args[2]),
             nr::WAIT => sys_wait(args[0]),
             nr::EXIT => sys_exit(args[0]),
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
@@ -611,10 +611,82 @@ pub extern "C" fn syscall_trap() -> i64 {
     }
 }
 
-/// SPAWN(path_ptr, path_len): load an ELF from the VFS into a fresh
+/// Build the initial stack image {argc, argv[], NULL, envp NULL,
+/// strings...} at the top of the child's stack and return the initial
+/// user rsp pointing at argc. `strings[0]` is argv[0] (the path).
+/// Writes through the phys identity map — the child CR3 isn't active.
+unsafe fn setup_argv(
+    img: &kernel::process::UserImage,
+    stack_lo: u64,
+    strings: &[alloc::vec::Vec<u8>],
+) -> Result<u64, i64> {
+    let n = strings.len();
+    if n == 0 || n > 16 {
+        return Err(-22);
+    }
+    let header = 8 + (n as u64 + 1) * 8 + 8; // argc + argv + NULL + envp NULL
+    let str_total: u64 = strings.iter().map(|s| s.len() as u64 + 1).sum();
+    let block_len = (header + str_total + 15) & !15;
+    if block_len > img.stack_pages * 4096 {
+        return Err(-12);
+    }
+    let start_va = kernel::process::USER_STACK_TOP - block_len;
+    let mut block = alloc::vec::Vec::with_capacity(block_len as usize);
+    // placeholder header; pointers patched after layout is known
+    let argc_pos = block.len();
+    block.extend_from_slice(&(n as u64).to_le_bytes());
+    for _ in 0..n + 2 {
+        block.extend_from_slice(&0u64.to_le_bytes());
+    }
+    let mut offs = alloc::vec::Vec::with_capacity(n);
+    for s in strings {
+        offs.push(block.len() as u64);
+        block.extend_from_slice(s);
+        block.push(0);
+    }
+    // patch argv pointers: string i lives at start_va + off
+    for (i, off) in offs.iter().enumerate() {
+        let va = start_va + off;
+        let at = argc_pos + 8 + i * 8;
+        block[at..at + 8].copy_from_slice(&va.to_le_bytes());
+    }
+    let dst_phys = img.stack_phys + (start_va - stack_lo);
+    // SAFETY: dst_phys is inside the freshly allocated child stack.
+    unsafe {
+        core::ptr::copy_nonoverlapping(block.as_ptr(), dst_phys as *mut u8, block.len());
+    }
+    Ok(start_va)
+}
+
+/// Read the SPAWN args descriptor from parent memory (still the active
+/// CR3): {u64 argc, argc x {u64 ptr, u64 len}}. Returns arg byte vecs.
+unsafe fn read_spawn_args(args_ptr: u64) -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, i64> {
+    if args_ptr == 0 {
+        return Ok(alloc::vec::Vec::new());
+    }
+    // SAFETY: args_ptr is a parent user VA mapped under the active CR3.
+    let n = unsafe { *(args_ptr as *const u64) };
+    if n > 15 {
+        return Err(-22);
+    }
+    let mut out = alloc::vec::Vec::with_capacity(n as usize);
+    for i in 0..n as usize {
+        let d = args_ptr + 8 + (i * 16) as u64;
+        let (p, l) = unsafe { (*(d as *const u64), *((d + 8) as *const u64)) };
+        if l > 1024 {
+            return Err(-22);
+        }
+        // SAFETY: p/l describe a parent user buffer.
+        let bytes = unsafe { core::slice::from_raw_parts(p as *const u8, l as usize) };
+        out.push(bytes.to_vec());
+    }
+    Ok(out)
+}
+
+/// SPAWN(path_ptr, path_len, args_ptr): load an ELF from the VFS into a fresh
 /// address space and context-switch to it. Returns the child pid to
 /// the *parent* (stored in its ctx before the switch).
-unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
+unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
     if p_len == 0 || p_len > 64 {
         return -22;
     }
@@ -624,6 +696,15 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         Ok(s) => s,
         Err(_) => return -14,
     };
+    // argv strings: argv[0] = path, then caller args — all copied out of
+    // parent memory now, before the CR3 switch.
+    let mut arg_vecs = match unsafe { read_spawn_args(args_ptr) } {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let mut strings = alloc::vec::Vec::with_capacity(arg_vecs.len() + 1);
+    strings.push(pb.to_vec());
+    strings.append(&mut arg_vecs);
     let Some(elf) = (unsafe { sys_vfs() }).read(path) else {
         return -2; // ENOENT
     };
@@ -682,6 +763,11 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         )
     };
     st.fill(0);
+    // argv block at the top of the child stack; rsp points at argc.
+    let init_rsp = match unsafe { setup_argv(&img, stack_lo, &strings) } {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     let pid = NEXT_PID;
     NEXT_PID += 1;
     // Child ctx: fresh register state, entry/rsp/rflags/cr3 set.
@@ -690,7 +776,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         *v = 0;
     }
     c[cx::RIP] = img.entry;
-    c[cx::SP] = kernel::process::initial_rsp(&img);
+    c[cx::SP] = init_rsp;
     c[cx::FL] = 0x202; // IF=1
     c[cx::CR3] = tables.cr3;
     let frame_count = (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
@@ -1059,6 +1145,12 @@ fn run_init(
         )
     };
     st.fill(0);
+    // /init gets argv[0] = "/init" like any spawned process.
+    let init_strings = [b"/init".to_vec()];
+    let init_rsp = match unsafe { setup_argv(&img, stack_lo, &init_strings) } {
+        Ok(r) => r,
+        Err(_) => kernel::process::initial_rsp(&img),
+    };
 
     unsafe {
         USER_PML4 = tables.cr3;
@@ -1096,5 +1188,5 @@ fn run_init(
     }
     con.println("entering /init (ring 3)...");
     arch::log("sigma-kernel: entering user mode\n");
-    unsafe { enter_user(img.entry, kernel::process::initial_rsp(&img), tables.cr3) }
+    unsafe { enter_user(img.entry, init_rsp, tables.cr3) }
 }
