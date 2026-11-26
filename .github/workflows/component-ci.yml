@@ -23,6 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out sigma-bootloader path dependency
+        run: git clone --depth 1 https://github.com/AaryanSinghChauhan09/SigmaOS-sigma-bootloader.git "${{ github.workspace }}/../SigmaOS-sigma-bootloader"
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
