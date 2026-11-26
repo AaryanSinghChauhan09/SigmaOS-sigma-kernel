@@ -601,6 +601,7 @@ pub extern "C" fn syscall_trap() -> i64 {
             nr::SPAWN => sys_spawn(args[0], args[1]),
             nr::WAIT => sys_wait(args[0]),
             nr::EXIT => sys_exit(args[0]),
+            nr::MEMINFO => sys_meminfo(args[0], args[1]),
             _ => {
                 let mut svc = arch::TrapSvc;
                 kernel::syscall::dispatch(nr, &args, &mut svc)
@@ -791,6 +792,24 @@ unsafe fn reap_process(idx: usize) {
             off: 0,
         }; 8],
     };
+}
+
+/// MEMINFO(ptr, len): write {total_frames, free_frames} as two u64s
+/// to the user buffer; len must be >= 16. Returns 0 or -errno.
+unsafe fn sys_meminfo(ptr: u64, len: u64) -> i64 {
+    if ptr == 0 || len < 16 {
+        return -22;
+    }
+    let (total, free) = match USER_ALLOC.as_ref() {
+        Some(a) => (a.total_frames(), a.free_frames()),
+        None => return -12,
+    };
+    // SAFETY: caller validated ptr/len; user buf mapped under active CR3.
+    unsafe {
+        *(ptr as *mut u64) = total;
+        *((ptr + 8) as *mut u64) = free;
+    }
+    0
 }
 
 /// EXIT(code): mark the process exited, wake the waiting parent,
