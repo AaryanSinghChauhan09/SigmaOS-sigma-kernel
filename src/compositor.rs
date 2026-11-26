@@ -359,7 +359,6 @@ impl Compositor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     #[test]
     fn rect_ops() {

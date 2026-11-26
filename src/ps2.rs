@@ -251,6 +251,7 @@ mod tests {
     /// Fake i8042: status port reports OUT_FULL when a scancode is
     /// queued; data port pops the queue.
     struct FakePs2 {
+        #[allow(dead_code)]
         status: Rc<RefCell<u8>>,
         queue: Rc<RefCell<VecDeque<u8>>>,
         writes: Rc<RefCell<Vec<(u16, u8)>>>,

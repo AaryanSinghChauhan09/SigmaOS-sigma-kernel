@@ -354,7 +354,6 @@ mod tests {
     use super::*;
     use crate::boot::MemRegion;
     use alloc::vec;
-    use alloc::vec::Vec;
     use std::collections::HashMap;
 
     /// In-memory PhysMem over a HashMap for tests.
