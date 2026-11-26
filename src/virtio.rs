@@ -72,9 +72,15 @@ impl VirtQueue {
     /// Create a queue of `size` descriptors (must be power of two).
     pub fn new(size: u16) -> Result<Self, crate::KernelError> {
         if size == 0 || (size & (size - 1)) != 0 {
-            return Err(crate::KernelError::InvalidArg("queue size not power of two"));
+            return Err(crate::KernelError::InvalidArg(
+                "queue size not power of two",
+            ));
         }
-        Ok(Self { size, free_head: 0, pending: 0 })
+        Ok(Self {
+            size,
+            free_head: 0,
+            pending: 0,
+        })
     }
 
     /// Mask for ring wraparound.

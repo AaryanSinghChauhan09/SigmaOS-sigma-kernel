@@ -33,7 +33,10 @@ impl Framebuffer {
             (16, _) => FbFormat::Rgb565,
             _ => return Err(KernelError::HardwareMissing("unsupported bpp")),
         };
-        Ok(Self { info: info.clone(), format })
+        Ok(Self {
+            info: info.clone(),
+            format,
+        })
     }
 
     /// Bytes per pixel for the chosen format.
@@ -57,12 +60,8 @@ impl Framebuffer {
     /// Encode a color for the format.
     pub fn encode(&self, r: u8, g: u8, b: u8) -> u32 {
         match self.format {
-            FbFormat::Xrgb8888 => {
-                (0xFF << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32
-            }
-            FbFormat::Bgrx8888 => {
-                (0xFF << 24) | ((b as u32) << 16) | ((g as u32) << 8) | r as u32
-            }
+            FbFormat::Xrgb8888 => (0xFF << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
+            FbFormat::Bgrx8888 => (0xFF << 24) | ((b as u32) << 16) | ((g as u32) << 8) | r as u32,
             FbFormat::Rgb565 => {
                 let r5 = ((r as u32) >> 3) & 0x1F;
                 let g6 = ((g as u32) >> 2) & 0x3F;

@@ -263,7 +263,11 @@ impl ResourceAttachBacking {
             entries.push((addr, len));
             off += 12;
         }
-        Ok(Self { resource_id, nr_entries: nr_entries as u32, entries })
+        Ok(Self {
+            resource_id,
+            nr_entries: nr_entries as u32,
+            entries,
+        })
     }
 }
 
@@ -332,7 +336,11 @@ mod tests {
 
     #[test]
     fn set_scanout_roundtrip() {
-        let s = SetScanout { r#type: 0, scanout_id: 0, resource_id: 7 };
+        let s = SetScanout {
+            r#type: 0,
+            scanout_id: 0,
+            resource_id: 7,
+        };
         assert_eq!(SetScanout::decode(&s.encode()).unwrap(), s);
     }
 

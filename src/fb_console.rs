@@ -2,8 +2,8 @@
 //!
 //! Uses the linear framebuffer for text rendering with the 8x8 font.
 
-use crate::fb::{Framebuffer, draw_text};
 use crate::boot::FramebufferInfo;
+use crate::fb::{draw_text, Framebuffer};
 use crate::KernelError;
 use alloc::string::ToString;
 

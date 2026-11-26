@@ -35,12 +35,16 @@ impl BlkConfig {
             return Err(KernelError::InvalidArg("blk config too small"));
         }
         let capacity_sectors = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-        Ok(Self { capacity_sectors, sector_size: 512 })
+        Ok(Self {
+            capacity_sectors,
+            sector_size: 512,
+        })
     }
 
     /// Total capacity in bytes.
     pub fn capacity_bytes(&self) -> u64 {
-        self.capacity_sectors.saturating_mul(self.sector_size as u64)
+        self.capacity_sectors
+            .saturating_mul(self.sector_size as u64)
     }
 }
 
@@ -129,7 +133,10 @@ impl<T: BlkTransport> BlockDevice<T> {
 
     /// Read `n` sectors.
     pub fn read_sectors(&mut self, sector: u64, n: u64) -> Result<Vec<u8>, KernelError> {
-        if sector.checked_add(n).map_or(true, |e| e > self.config.capacity_sectors) {
+        if sector
+            .checked_add(n)
+            .map_or(true, |e| e > self.config.capacity_sectors)
+        {
             return Err(KernelError::InvalidArg("read past end"));
         }
         let mut buf = alloc::vec![0u8; (n * 512) as usize];
@@ -181,19 +188,31 @@ mod tests {
     }
 
     fn dev() -> BlockDevice<FakeTransport> {
-        let cfg = BlkConfig { capacity_sectors: 4, sector_size: 512 };
+        let cfg = BlkConfig {
+            capacity_sectors: 4,
+            sector_size: 512,
+        };
         BlockDevice::new(
-            FakeTransport { backing: vec![0u8; 4 * 512], flushed: false },
+            FakeTransport {
+                backing: vec![0u8; 4 * 512],
+                flushed: false,
+            },
             cfg,
         )
     }
 
     #[test]
     fn header_roundtrip() {
-        let h = OutHeader { req_type: req_type::READ, sector: 0xdead_beef };
+        let h = OutHeader {
+            req_type: req_type::READ,
+            sector: 0xdead_beef,
+        };
         let enc = h.encode();
         assert_eq!(enc[0], 0); // type LE
-        assert_eq!(u64::from_le_bytes(enc[8..16].try_into().unwrap()), 0xdead_beef);
+        assert_eq!(
+            u64::from_le_bytes(enc[8..16].try_into().unwrap()),
+            0xdead_beef
+        );
         assert_eq!(OutHeader::decode(&enc).unwrap(), h);
     }
 

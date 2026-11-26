@@ -11,8 +11,8 @@
 extern crate alloc;
 
 use alloc::string::ToString;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 extern crate sigma_kernel as kernel;
 
 #[allow(unsafe_code)]
@@ -37,27 +37,28 @@ const MB2_HEADER_LEN: usize = 512;
 pub extern "C" fn _start() -> ! {
     let (eax, info_ptr) = arch::boot_regs();
     arch::init();
-    arch::log(&alloc::format!("sigma-kernel: entry eax={:#x} info={:#x}\n", eax, info_ptr));
+    arch::log(&alloc::format!(
+        "sigma-kernel: entry eax={:#x} info={:#x}\n",
+        eax,
+        info_ptr
+    ));
 
     if eax == kernel::boot::MB1_MAGIC_EAX {
         // MB1: fixed 48-byte header + separate mmap table + cmdline.
         // SAFETY: %ebx points to a valid MB1 info struct.
-        let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(info_ptr as *const u8, 48)
-        };
+        let hdr_bytes = unsafe { core::slice::from_raw_parts(info_ptr as *const u8, 48) };
         let hdr = match kernel::boot::Mb1InfoHeader::parse(hdr_bytes) {
             Ok(h) => h,
             Err(e) => {
                 arch::log(&alloc::format!("sigma-kernel: mb1 header parse {:?}\n", e));
-                loop { arch::halt(); }
+                loop {
+                    arch::halt();
+                }
             }
         };
         // Copy the mmap table out of low memory.
         let mmap = unsafe {
-            core::slice::from_raw_parts(
-                hdr.mmap_ptr as *const u8,
-                hdr.mmap_len as usize,
-            )
+            core::slice::from_raw_parts(hdr.mmap_ptr as *const u8, hdr.mmap_len as usize)
         };
         // cmdline is a NUL-terminated string at cmdline_ptr (may be 0).
         let cmdline = if hdr.cmdline_ptr != 0 {
@@ -68,8 +69,7 @@ pub extern "C" fn _start() -> ! {
                 while *p.add(len) != 0 && len < 4096 {
                     len += 1;
                 }
-                core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len))
-                    .to_string()
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)).to_string()
             }
             .into()
         } else {
@@ -103,7 +103,10 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
     unsafe {
         CON = Some(kernel::console::TextConsole::new(
             arch::VgaBuf,
-            kernel::console::attr::make(kernel::console::attr::LIGHT_GREEN, kernel::console::attr::BLACK),
+            kernel::console::attr::make(
+                kernel::console::attr::LIGHT_GREEN,
+                kernel::console::attr::BLACK,
+            ),
         ));
     }
     #[allow(static_mut_refs)]
@@ -120,9 +123,7 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
     let mut initrd: Option<&[u8]> = None;
     for &(paddr, size) in &bi.modules {
         // SAFETY: module paddr/size come from hvm_start_info; identity-mapped.
-        let bytes = unsafe {
-            core::slice::from_raw_parts(paddr as *const u8, size as usize)
-        };
+        let bytes = unsafe { core::slice::from_raw_parts(paddr as *const u8, size as usize) };
         if bytes.len() >= 6 && &bytes[..6] == b"070701" {
             initrd = Some(bytes);
             break;
@@ -131,7 +132,10 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
     if let Some(bytes) = initrd {
         match vfs.load_cpio_newc(bytes) {
             Ok(()) => {
-                arch::log(&alloc::format!("sigma-kernel: initramfs mounted ({} nodes)\n", vfs.len()));
+                arch::log(&alloc::format!(
+                    "sigma-kernel: initramfs mounted ({} nodes)\n",
+                    vfs.len()
+                ));
                 con.println(&alloc::format!("initramfs: {} nodes", vfs.len()));
                 if let Some(list) = vfs.list("/") {
                     for name in list {
@@ -139,7 +143,10 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
                     }
                 }
                 if let Some(init) = vfs.read("/init") {
-                    arch::log(&alloc::format!("sigma-kernel: /init present ({} bytes)\n", init.len()));
+                    arch::log(&alloc::format!(
+                        "sigma-kernel: /init present ({} bytes)\n",
+                        init.len()
+                    ));
                     con.println(&alloc::format!("/init: {} bytes", init.len()));
                     // Probe ELF header — reports entry + load segments.
                     match kernel::elf::parse_header(init)
@@ -149,11 +156,15 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
                             let (lo, hi) = kernel::elf::image_span(&segs);
                             arch::log(&alloc::format!(
                                 "sigma-kernel: /init ELF entry={:#x} span={:#x}..{:#x} segs={}\n",
-                                h.entry, lo, hi, segs.len()
+                                h.entry,
+                                lo,
+                                hi,
+                                segs.len()
                             ));
                             con.println(&alloc::format!(
                                 "/init ELF: entry {:#x}, {} segs",
-                                h.entry, segs.len()
+                                h.entry,
+                                segs.len()
                             ));
                         }
                         Err(e) => {
@@ -219,16 +230,16 @@ pub extern "C" fn pvh_kernel_entry(info_ptr: u64) -> ! {
 
     // SAFETY: %rdi holds a valid hvm_start_info physical address per
     // the PVH boot ABI; all fields below 4 GiB are directly mapped.
-    let read_u32 = |off: usize| -> u32 {
-        unsafe { ((info_ptr + off as u64) as *const u32).read_unaligned() }
-    };
-    let read_u64 = |off: usize| -> u64 {
-        unsafe { ((info_ptr + off as u64) as *const u64).read_unaligned() }
-    };
+    let read_u32 =
+        |off: usize| -> u32 { unsafe { ((info_ptr + off as u64) as *const u32).read_unaligned() } };
+    let read_u64 =
+        |off: usize| -> u64 { unsafe { ((info_ptr + off as u64) as *const u64).read_unaligned() } };
 
     if read_u32(0) != kernel::boot::PVH_MAGIC {
         arch::log("sigma-kernel: bad pvh magic\n");
-        loop { arch::halt(); }
+        loop {
+            arch::halt();
+        }
     }
     let version = read_u32(4);
     let nr_modules = read_u32(12);
@@ -240,9 +251,7 @@ pub extern "C" fn pvh_kernel_entry(info_ptr: u64) -> ! {
 
     // hvm_start_info fixed part: copy the 56-byte header.
     // SAFETY: info struct is at least 56 bytes per spec.
-    let info_bytes = unsafe {
-        core::slice::from_raw_parts(info_ptr as *const u8, 56)
-    };
+    let info_bytes = unsafe { core::slice::from_raw_parts(info_ptr as *const u8, 56) };
 
     // Memory map entries (24 bytes each) -> owned Vec.
     let memmap_bytes: alloc::vec::Vec<u8> = if memmap_entries > 0 && memmap_paddr != 0 {
@@ -412,16 +421,16 @@ static mut CTX: [[u64; 19]; NPROCS] = [[0; 19]; NPROCS];
 pub struct ProcSlot {
     pub used: bool,
     pub exited: bool,
-    pub sleeping: bool,      // Skipped by sched_tick until woken
-    pub wait_pid: u64,        // Pid this proc is blocked waiting on (0 = none)
-    pub reaped: bool,         // Exit status already delivered to a waiter
+    pub sleeping: bool, // Skipped by sched_tick until woken
+    pub wait_pid: u64,  // Pid this proc is blocked waiting on (0 = none)
+    pub reaped: bool,   // Exit status already delivered to a waiter
     pub pid: u64,
     pub parent: i64,
     pub exit_code: u64,
     pub pml4: u64,
     pub brk: u64,
-    pub frame_count: u16,    // Number of user frames allocated (for teardown)
-    pub fds: [FdEnt; 8],      // Per-process file descriptor table
+    pub frame_count: u16, // Number of user frames allocated (for teardown)
+    pub fds: [FdEnt; 8],  // Per-process file descriptor table
 }
 
 const MAX_FDS: usize = 8;
@@ -446,7 +455,13 @@ pub struct Pipe {
 
 impl Pipe {
     const fn new() -> Self {
-        Self { used: false, buf: [0; PIPE_BUF_SIZE], head: 0, tail: 0, count: 0 }
+        Self {
+            used: false,
+            buf: [0; PIPE_BUF_SIZE],
+            head: 0,
+            tail: 0,
+            count: 0,
+        }
     }
 }
 
@@ -460,15 +475,28 @@ pub struct FdEnt {
     pub off: u64,
 }
 
-pub static mut PIPES: [Pipe; MAX_PIPES] = [
-    Pipe::new(), Pipe::new(), Pipe::new(), Pipe::new(),
-];
+pub static mut PIPES: [Pipe; MAX_PIPES] = [Pipe::new(), Pipe::new(), Pipe::new(), Pipe::new()];
 
 pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
-    used: false, exited: false, sleeping: false, wait_pid: 0,
-    reaped: false, pid: 0, parent: -1,
-    exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
-    fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
+    used: false,
+    exited: false,
+    sleeping: false,
+    wait_pid: 0,
+    reaped: false,
+    pid: 0,
+    parent: -1,
+    exit_code: 0,
+    pml4: 0,
+    brk: 0,
+    frame_count: 0,
+    fds: [FdEnt {
+        used: false,
+        kind: FD_FILE,
+        pipe_id: 0,
+        path: [0; 64],
+        len: 0,
+        off: 0,
+    }; 8],
 }; NPROCS];
 static mut NEXT_PID: u64 = 1;
 /// Index of the currently running process.
@@ -561,8 +589,12 @@ pub extern "C" fn syscall_trap() -> i64 {
         let nr = *ctx;
         // arg regs rdi,rsi,rdx,r10,r8,r9 -> ctx slots 4,3,2,7,5,6
         let args = [
-            *ctx.add(cx::RDI), *ctx.add(cx::RSI), *ctx.add(cx::RDX),
-            *ctx.add(cx::R10), *ctx.add(cx::R8), *ctx.add(cx::R9),
+            *ctx.add(cx::RDI),
+            *ctx.add(cx::RSI),
+            *ctx.add(cx::RDX),
+            *ctx.add(cx::R10),
+            *ctx.add(cx::R8),
+            *ctx.add(cx::R9),
         ];
         use kernel::syscall::nr;
         match nr {
@@ -615,7 +647,10 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         pages.push((stack_lo + i * 4096, img.stack_phys + i * 4096));
     }
     let tables = match kernel::usermem::build_user_tables(
-        &pages, 0x200000, alloc, &mut arch::IdentityPhysMem,
+        &pages,
+        0x200000,
+        alloc,
+        &mut arch::IdentityPhysMem,
     ) {
         Ok(t) => t,
         Err(_) => return -12,
@@ -624,9 +659,9 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
         let len = (s.frames * 4096) as usize;
         // SAFETY: phys is a freshly allocated frame range we own.
         let dst = unsafe { core::slice::from_raw_parts_mut(s.phys as *mut u8, len) };
-        if kernel::process::materialize_with_offset(
-            elf, s.offset, s.filesz, s.memsz, s.delta, dst,
-        ).is_err() {
+        if kernel::process::materialize_with_offset(elf, s.offset, s.filesz, s.memsz, s.delta, dst)
+            .is_err()
+        {
             return -12;
         }
     }
@@ -643,11 +678,25 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64) -> i64 {
     c[cx::CR3] = tables.cr3;
     let frame_count = (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
     PROCS[slot] = ProcSlot {
-        used: true, exited: false, sleeping: false, wait_pid: 0,
-        reaped: false, pid,
-        parent: CUR_PROC as i64, exit_code: 0,
-        pml4: tables.cr3, brk: USER_BRK, frame_count,
-        fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
+        used: true,
+        exited: false,
+        sleeping: false,
+        wait_pid: 0,
+        reaped: false,
+        pid,
+        parent: CUR_PROC as i64,
+        exit_code: 0,
+        pml4: tables.cr3,
+        brk: USER_BRK,
+        frame_count,
+        fds: [FdEnt {
+            used: false,
+            kind: FD_FILE,
+            pipe_id: 0,
+            path: [0; 64],
+            len: 0,
+            off: 0,
+        }; 8],
     };
     switch_to(slot);
     pid as i64
@@ -707,10 +756,25 @@ unsafe fn reap_process(idx: usize) {
     // we don't have a per-process frame list. This is a known gap.
     // For now, we just mark the slot as unused.
     PROCS[idx] = ProcSlot {
-        used: false, exited: false, sleeping: false, wait_pid: 0,
-        reaped: false, pid: 0, parent: -1,
-        exit_code: 0, pml4: 0, brk: 0, frame_count: 0,
-        fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
+        used: false,
+        exited: false,
+        sleeping: false,
+        wait_pid: 0,
+        reaped: false,
+        pid: 0,
+        parent: -1,
+        exit_code: 0,
+        pml4: 0,
+        brk: 0,
+        frame_count: 0,
+        fds: [FdEnt {
+            used: false,
+            kind: FD_FILE,
+            pipe_id: 0,
+            path: [0; 64],
+            len: 0,
+            off: 0,
+        }; 8],
     };
 }
 
@@ -724,7 +788,9 @@ unsafe fn sys_exit(code: u64) -> i64 {
     let parent = PROCS[cur].parent;
     if parent < 0 {
         arch::log("sigma-kernel: init exit\n");
-        loop { arch::halt(); }
+        loop {
+            arch::halt();
+        }
     }
     let p = parent as usize;
     // Wake parent if it's sleeping on this child.
@@ -743,10 +809,15 @@ unsafe fn sys_exit(code: u64) -> i64 {
         }
     });
     match target {
-        Some(j) => { switch_to(j); 0 }
+        Some(j) => {
+            switch_to(j);
+            0
+        }
         None => {
             arch::log("sigma-kernel: no runnable process\n");
-            loop { arch::halt(); }
+            loop {
+                arch::halt();
+            }
         }
     }
 }
@@ -774,10 +845,18 @@ fn usable_regions(bi: &kernel::boot::BootInfo) -> Vec<kernel::boot::MemRegion> {
             if rs < hi && re > lo {
                 // split around the reserved hole
                 if rs < lo {
-                    out.push(kernel::boot::MemRegion { start: rs, len: lo - rs, mem_type: 1 });
+                    out.push(kernel::boot::MemRegion {
+                        start: rs,
+                        len: lo - rs,
+                        mem_type: 1,
+                    });
                 }
                 if hi < re {
-                    out.push(kernel::boot::MemRegion { start: hi, len: re - hi, mem_type: 1 });
+                    out.push(kernel::boot::MemRegion {
+                        start: hi,
+                        len: re - hi,
+                        mem_type: 1,
+                    });
                 }
                 continue 'regions;
             }
@@ -798,9 +877,14 @@ fn run_init(
     let mut alloc = match kernel::mm::FrameAllocator::new(&regions) {
         Ok(a) => a,
         Err(e) => {
-            arch::log(&alloc::format!("sigma-kernel: frame alloc failed {:?}\n", e));
+            arch::log(&alloc::format!(
+                "sigma-kernel: frame alloc failed {:?}\n",
+                e
+            ));
             con.println("frame allocator failed");
-            loop { arch::halt() }
+            loop {
+                arch::halt()
+            }
         }
     };
     let img = match kernel::process::load_image(init, &mut alloc) {
@@ -808,10 +892,16 @@ fn run_init(
         Err(e) => {
             arch::log(&alloc::format!("sigma-kernel: load_image failed {:?}\n", e));
             con.println("load_image failed");
-            loop { arch::halt() }
+            loop {
+                arch::halt()
+            }
         }
     };
-    con.println(&alloc::format!("/init loaded: entry {:#x}, {} segs", img.entry, img.segments.len()));
+    con.println(&alloc::format!(
+        "/init loaded: entry {:#x}, {} segs",
+        img.entry,
+        img.segments.len()
+    ));
 
     // Collect 4K user pages: segments + stack.
     let mut pages = Vec::new();
@@ -825,12 +915,22 @@ fn run_init(
         pages.push((stack_lo + i * 4096, img.stack_phys + i * 4096));
     }
 
-    let tables = match kernel::usermem::build_user_tables(&pages, 0x200000, &mut alloc, &mut arch::IdentityPhysMem) {
+    let tables = match kernel::usermem::build_user_tables(
+        &pages,
+        0x200000,
+        &mut alloc,
+        &mut arch::IdentityPhysMem,
+    ) {
         Ok(t) => t,
         Err(e) => {
-            arch::log(&alloc::format!("sigma-kernel: user tables failed {:?}\n", e));
+            arch::log(&alloc::format!(
+                "sigma-kernel: user tables failed {:?}\n",
+                e
+            ));
             con.println("user page tables failed");
-            loop { arch::halt() }
+            loop {
+                arch::halt()
+            }
         }
     };
 
@@ -839,10 +939,17 @@ fn run_init(
         let len = (s.frames * 4096) as usize;
         // SAFETY: phys is a freshly allocated frame range we own.
         let dst = unsafe { core::slice::from_raw_parts_mut(s.phys as *mut u8, len) };
-        if let Err(e) = kernel::process::materialize_with_offset(init, s.offset, s.filesz, s.memsz, s.delta, dst) {
-            arch::log(&alloc::format!("sigma-kernel: materialize failed {:?}\n", e));
+        if let Err(e) = kernel::process::materialize_with_offset(
+            init, s.offset, s.filesz, s.memsz, s.delta, dst,
+        ) {
+            arch::log(&alloc::format!(
+                "sigma-kernel: materialize failed {:?}\n",
+                e
+            ));
             con.println("materialize failed");
-            loop { arch::halt() }
+            loop {
+                arch::halt()
+            }
         }
     }
 
@@ -851,12 +958,28 @@ fn run_init(
         USER_ALLOC = Some(alloc);
         USER_BRK = 0x10000000;
         // Register /init as process 0 (pid 1, no parent).
-        let init_frames = (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
+        let init_frames =
+            (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
         PROCS[0] = ProcSlot {
-            used: true, exited: false, sleeping: false, wait_pid: 0,
-            reaped: false, pid: 1, parent: -1,
-            exit_code: 0, pml4: tables.cr3, brk: USER_BRK, frame_count: init_frames,
-            fds: [FdEnt { used: false, kind: FD_FILE, pipe_id: 0, path: [0; 64], len: 0, off: 0 }; 8],
+            used: true,
+            exited: false,
+            sleeping: false,
+            wait_pid: 0,
+            reaped: false,
+            pid: 1,
+            parent: -1,
+            exit_code: 0,
+            pml4: tables.cr3,
+            brk: USER_BRK,
+            frame_count: init_frames,
+            fds: [FdEnt {
+                used: false,
+                kind: FD_FILE,
+                pipe_id: 0,
+                path: [0; 64],
+                len: 0,
+                off: 0,
+            }; 8],
         };
         NEXT_PID = 2;
         CUR_PROC = 0;
@@ -866,7 +989,5 @@ fn run_init(
     }
     con.println("entering /init (ring 3)...");
     arch::log("sigma-kernel: entering user mode\n");
-    unsafe {
-        enter_user(img.entry, kernel::process::initial_rsp(&img), tables.cr3)
-    }
+    unsafe { enter_user(img.entry, kernel::process::initial_rsp(&img), tables.cr3) }
 }

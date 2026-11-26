@@ -12,8 +12,7 @@ fn main() {
     let dir = std::path::Path::new(&out);
 
     // MB2 header follows in .multiboot2.
-    let mb2 = sigma_bootloader::Mb2Header::sigmaos_default(0x100000, &[])
-        .expect("mb2 header");
+    let mb2 = sigma_bootloader::Mb2Header::sigmaos_default(0x100000, &[]).expect("mb2 header");
     let mut mb2_bytes = mb2.to_bytes();
     mb2_bytes.resize(512, 0);
     std::fs::write(dir.join("mb2header.bin"), &mb2_bytes).expect("write mb2header.bin");

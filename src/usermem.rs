@@ -12,8 +12,8 @@
 
 use crate::error::KernelError;
 use crate::mm::FrameAllocator;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 // Page-table entry flags (x86-64).
 pub const P_PRESENT: u64 = 1 << 0;
@@ -65,9 +65,7 @@ pub struct UserTables {
 }
 
 fn alloc_table(alloc: &mut FrameAllocator) -> Result<TablePage, KernelError> {
-    let phys = alloc
-        .alloc_frame()
-        .ok_or(KernelError::OutOfMemory)?;
+    let phys = alloc.alloc_frame().ok_or(KernelError::OutOfMemory)?;
     Ok(TablePage::zeroed(phys))
 }
 
@@ -186,7 +184,12 @@ pub fn build_user_tables(
     // PML4[0] -> PDPT for low half
     let pdpt_t = alloc_table(alloc)?;
     tables.push(pdpt_t);
-    set_entry(phys_mem, pml4, 0, pdpt_t.phys | P_PRESENT | P_WRITE | P_USER);
+    set_entry(
+        phys_mem,
+        pml4,
+        0,
+        pdpt_t.phys | P_PRESENT | P_WRITE | P_USER,
+    );
     let pdpt = pdpt_t.phys;
 
     // PDPT[0] -> PD covering 0..1 GiB
@@ -209,9 +212,7 @@ pub fn build_user_tables(
         // A slot that overlaps the kernel's first 2 MiB cannot be a
         // clean user region — reject rather than silently corrupt.
         if *slot < kernel_top_2m {
-            return Err(KernelError::InvalidArg(
-                "user pages overlap kernel slot",
-            ));
+            return Err(KernelError::InvalidArg("user pages overlap kernel slot"));
         }
         // PT for this slot's 512 4K pages.
         let pt_t = alloc_table(alloc)?;
@@ -237,15 +238,13 @@ pub fn build_user_tables(
             continue; // already a user PT
         }
         // skip non-canonical holes: only map 0..1GiB identity
-        set_entry(
-            phys_mem,
-            pd,
-            mi,
-            vaddr | P_PRESENT | P_WRITE | P_PS,
-        );
+        set_entry(phys_mem, pd, mi, vaddr | P_PRESENT | P_WRITE | P_PS);
     }
 
-    Ok(UserTables { cr3: pml4, pages: tables })
+    Ok(UserTables {
+        cr3: pml4,
+        pages: tables,
+    })
 }
 
 /// Map a single 4K user page `vaddr`->`phys` into an existing user
@@ -275,9 +274,7 @@ pub fn map_user_page(
         let slot_base = (pd_e & !0xfff) & !((2 << 20) - 1);
         let pt_t = alloc_table(alloc)?;
         for i in 0..PT_ENTRIES {
-            let leaf = (slot_base + i as u64 * FRAME)
-                | P_PRESENT
-                | P_WRITE;
+            let leaf = (slot_base + i as u64 * FRAME) | P_PRESENT | P_WRITE;
             set_entry(phys_mem, pt_t.phys, i, leaf);
         }
         pd_e = pt_t.phys | P_PRESENT | P_WRITE | P_USER;
@@ -299,11 +296,7 @@ pub fn map_user_page(
 /// covering PD entry is a 2 MiB supervisor page, or the leaf itself
 /// is not present. Used by MUNMAP — callers must check `P_USER`
 /// before freeing so supervisor/kernel pages are never released.
-pub fn user_pte(
-    pml4: u64,
-    vaddr: u64,
-    phys_mem: &dyn PhysMem,
-) -> Option<(u64, u64)> {
+pub fn user_pte(pml4: u64, vaddr: u64, phys_mem: &dyn PhysMem) -> Option<(u64, u64)> {
     let (pi, di, mi, ti) = indices(vaddr);
     let pdpt_e = get_entry(phys_mem, pml4, pi);
     if pdpt_e & P_PRESENT == 0 {
@@ -329,11 +322,7 @@ pub fn user_pte(
 /// Free all page-table pages for a user CR3 (PML4, PDPT, PD, PTs).
 /// Does NOT free user data frames — those are the caller's responsibility.
 /// (Linux `pgd_free` + `pud_free` + `pmd_free` + `pte_free` analogue.)
-pub fn free_user_tables(
-    pml4: u64,
-    alloc: &mut FrameAllocator,
-    phys_mem: &mut dyn PhysMem,
-) {
+pub fn free_user_tables(pml4: u64, alloc: &mut FrameAllocator, phys_mem: &mut dyn PhysMem) {
     // Walk PML4[0] -> PDPT[0] -> PD and free all table pages.
     let pdpt_e = get_entry(phys_mem, pml4, 0);
     if pdpt_e & P_PRESENT == 0 {
@@ -364,8 +353,8 @@ pub fn free_user_tables(
 mod tests {
     use super::*;
     use crate::boot::MemRegion;
+    use alloc::vec;
     use alloc::vec::Vec;
-use alloc::vec;
     use std::collections::HashMap;
 
     /// In-memory PhysMem over a HashMap for tests.
@@ -384,11 +373,13 @@ use alloc::vec;
     #[test]
     fn map_user_page_splits_supervisor_slot() {
         let mut alloc = test_alloc();
-        let mut mem = MockMem { map: HashMap::new() };
+        let mut mem = MockMem {
+            map: HashMap::new(),
+        };
         // Minimal CR3: PML4[0]->PDPT->PD with one supervisor 2MiB slot.
         let pml4 = alloc.alloc_frame().unwrap();
         mem.write_u64(pml4, 0); // PML4[0] empty for now
-        // Build via build_user_tables with no user pages.
+                                // Build via build_user_tables with no user pages.
         let t = build_user_tables(&[], 0x200000, &mut alloc, &mut mem).unwrap();
         // vaddr 0x300000 is inside a supervisor 2MiB slot (< kernel_top? no,
         // kernel_top=0x200000 so slot 0x200000..0x400000 IS kernel).
@@ -412,7 +403,9 @@ use alloc::vec;
     #[test]
     fn user_pte_finds_only_user_leaves() {
         let mut alloc = test_alloc();
-        let mut mem = MockMem { map: HashMap::new() };
+        let mut mem = MockMem {
+            map: HashMap::new(),
+        };
         let t = build_user_tables(&[], 0x200000, &mut alloc, &mut mem).unwrap();
         let phys = alloc.alloc_frame().unwrap();
         map_user_page(t.cr3, 0x800000, phys, &mut alloc, &mut mem).unwrap();
@@ -449,7 +442,9 @@ use alloc::vec;
     #[test]
     fn builds_cr3_and_maps_user_pages() {
         let mut a = test_alloc();
-        let mut mem = MockMem { map: HashMap::new() };
+        let mut mem = MockMem {
+            map: HashMap::new(),
+        };
         // user page at vaddr 0x400000 -> phys 0x800000
         let user_pages = vec![(0x400000u64, 0x800000u64)];
         let t = build_user_tables(&user_pages, 0x200000, &mut a, &mut mem).unwrap();
@@ -470,7 +465,9 @@ use alloc::vec;
     #[test]
     fn kernel_slots_stay_supervisor() {
         let mut a = test_alloc();
-        let mut mem = MockMem { map: HashMap::new() };
+        let mut mem = MockMem {
+            map: HashMap::new(),
+        };
         let t = build_user_tables(&[(0x400000, 0x800000)], 0x200000, &mut a, &mut mem).unwrap();
         let pdpt = mem.read_u64(t.cr3) & !0xfff;
         let pd = mem.read_u64(pdpt) & !0xfff;
@@ -484,7 +481,9 @@ use alloc::vec;
     #[test]
     fn rejects_kernel_overlap() {
         let mut a = test_alloc();
-        let mut mem = MockMem { map: HashMap::new() };
+        let mut mem = MockMem {
+            map: HashMap::new(),
+        };
         // user page inside kernel's first 2 MiB
         let r = build_user_tables(&[(0x100000, 0x900000)], 0x200000, &mut a, &mut mem);
         assert!(r.is_err());

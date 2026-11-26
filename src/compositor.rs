@@ -124,7 +124,9 @@ impl Window {
         if x >= self.rect.w || y >= self.rect.h {
             return None;
         }
-        self.pixels.get(y as usize * self.rect.w as usize + x as usize).copied()
+        self.pixels
+            .get(y as usize * self.rect.w as usize + x as usize)
+            .copied()
     }
 
     /// Write a pixel in window coordinates.
@@ -224,7 +226,9 @@ impl Compositor {
 
     /// Resize a window's backing store.
     pub fn resize(&mut self, id: u32, w: u32, h: u32) -> Result<(), KernelError> {
-        let win = self.get_mut(id).ok_or(KernelError::InvalidArg("no window"))?;
+        let win = self
+            .get_mut(id)
+            .ok_or(KernelError::InvalidArg("no window"))?;
         let n = (w as usize)
             .checked_mul(h as usize)
             .ok_or(KernelError::InvalidArg("size overflow"))?;

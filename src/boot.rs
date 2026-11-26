@@ -3,8 +3,8 @@
 //! The bootloader hands us a pointer to the Multiboot2 info struct;
 //! this module parses memory-map and framebuffer tags into owned data.
 
-use alloc::vec::Vec;
 use crate::KernelError;
+use alloc::vec::Vec;
 
 /// Multiboot2 magic value at the start of the info struct.
 pub const MB2_MAGIC: u32 = 0x36_D7_62_89;
@@ -88,14 +88,14 @@ pub fn parse_mb2(bytes: &[u8]) -> Result<BootInfo, KernelError> {
         modules: Vec::new(),
         pci_devices: Vec::new(),
     };
-    
+
     // Simple PCI scan for VirtIO devices (0x0001-0x0004 range)
     // In a real kernel this would walk PCI config space; for now we
     // assume QEMU places VirtIO devices at known MMIO addresses.
     // QEMU -device virtio-blk-pci,bus=0,addr=0x1 maps to 0xfebf1000
     let virtio_mmio_bases = [
-        (0xfebf1000u64, 2), // block device
-        (0xfebf2000u64, 1), // network device
+        (0xfebf1000u64, 2),  // block device
+        (0xfebf2000u64, 1),  // network device
         (0xfebf3000u64, 16), // GPU device
     ];
     for (base, device_id) in virtio_mmio_bases {
@@ -116,9 +116,8 @@ pub fn parse_mb2(bytes: &[u8]) -> Result<BootInfo, KernelError> {
             TAG_FRAMEBUFFER => parse_fb_tag(body, &mut info)?,
             TAG_CMDLINE => {
                 let end = body.iter().position(|&b| b == 0).unwrap_or(body.len());
-                info.cmdline = Some(
-                    alloc::string::String::from_utf8_lossy(&body[..end]).into_owned(),
-                );
+                info.cmdline =
+                    Some(alloc::string::String::from_utf8_lossy(&body[..end]).into_owned());
             }
             TAG_END => break,
             _ => {}
@@ -143,7 +142,11 @@ fn parse_mem_map_tag(body: &[u8], info: &mut BootInfo) -> Result<(), KernelError
         let start = u64::from_le_bytes(body[off..off + 8].try_into().unwrap());
         let len = u64::from_le_bytes(body[off + 8..off + 16].try_into().unwrap());
         let mem_type = u32::from_le_bytes(body[off + 16..off + 20].try_into().unwrap());
-        info.mem_regions.push(MemRegion { start, len, mem_type });
+        info.mem_regions.push(MemRegion {
+            start,
+            len,
+            mem_type,
+        });
         off += entry_size;
     }
     Ok(())
@@ -283,17 +286,17 @@ pub fn parse_mb1(
         modules: Vec::new(),
         pci_devices: Vec::new(),
     };
-    
+
     // Simple PCI scan for VirtIO devices
     let virtio_mmio_bases = [
-        (0xfebf1000u64, 2), // block device
-        (0xfebf2000u64, 1), // network device
+        (0xfebf1000u64, 2),  // block device
+        (0xfebf2000u64, 1),  // network device
         (0xfebf3000u64, 16), // GPU device
     ];
     for (base, device_id) in virtio_mmio_bases {
         info.pci_devices.push((base, device_id));
     }
-    
+
     // low memory below 1 MiB is usable
     info.mem_regions.push(MemRegion {
         start: 0,
@@ -304,9 +307,7 @@ pub fn parse_mb1(
     let mut off = 0usize;
     while off + 24 <= mmap_bytes.len() {
         let entry = Mb1MmapEntry::parse(&mmap_bytes[off..])?;
-        let size = u32::from_le_bytes(
-            mmap_bytes[off..off + 4].try_into().unwrap(),
-        ) as usize;
+        let size = u32::from_le_bytes(mmap_bytes[off..off + 4].try_into().unwrap()) as usize;
         if size == 0 {
             break;
         }
@@ -367,11 +368,11 @@ pub fn parse_pvh(
         modules,
         pci_devices: Vec::new(),
     };
-    
+
     // Simple PCI scan for VirtIO devices
     let virtio_mmio_bases = [
-        (0xfebf1000u64, 2), // block device
-        (0xfebf2000u64, 1), // network device
+        (0xfebf1000u64, 2),  // block device
+        (0xfebf2000u64, 1),  // network device
         (0xfebf3000u64, 16), // GPU device
     ];
     for (base, device_id) in virtio_mmio_bases {

@@ -112,7 +112,8 @@ impl IsoConfig {
                  module2 /boot/initramfs.cpio\n\
                  boot\n\
              }}\n",
-            self.bootloader.timeout_seconds, self.version
+            self.bootloader.timeout_seconds,
+            self.version
         )
     }
 
@@ -163,7 +164,10 @@ impl IsoConfig {
             let _ = step;
         }
 
-        Ok(alloc::format!("ISO built successfully: {}", self.output_path))
+        Ok(alloc::format!(
+            "ISO built successfully: {}",
+            self.output_path
+        ))
     }
 
     /// Install to disk.
@@ -183,8 +187,14 @@ impl IsoConfig {
         // Simulated installation process
         let install_steps = vec![
             alloc::format!("Partitioning {}", self.disk_config.device),
-            alloc::format!("Creating partition table: {:?}", self.disk_config.partition_table),
-            alloc::format!("Formatting partitions with {:?}", self.disk_config.filesystem),
+            alloc::format!(
+                "Creating partition table: {:?}",
+                self.disk_config.partition_table
+            ),
+            alloc::format!(
+                "Formatting partitions with {:?}",
+                self.disk_config.filesystem
+            ),
             alloc::format!("Mounting filesystems"),
             alloc::format!("Extracting system files"),
             alloc::format!("Installing bootloader"),
@@ -205,16 +215,28 @@ impl IsoConfig {
     pub fn plan_install(&self) -> String {
         let mut plan = String::from("Installation Plan:\n");
         plan.push_str(&alloc::format!("  Device: {}\n", self.disk_config.device));
-        plan.push_str(&alloc::format!("  Partition table: {:?}\n", self.disk_config.partition_table));
+        plan.push_str(&alloc::format!(
+            "  Partition table: {:?}\n",
+            self.disk_config.partition_table
+        ));
         plan.push_str("  Partitions:\n");
         for p in &self.disk_config.partitions {
             plan.push_str(&alloc::format!(
                 "    {}: {} MB, mount: {}, flags: {:?}\n",
-                p.number, p.size_mb, p.mount_point, p.flags
+                p.number,
+                p.size_mb,
+                p.mount_point,
+                p.flags
             ));
         }
-        plan.push_str(&alloc::format!("  Filesystem: {:?}\n", self.disk_config.filesystem));
-        plan.push_str(&alloc::format!("  Bootloader: {:?}\n", self.bootloader.bootloader_type));
+        plan.push_str(&alloc::format!(
+            "  Filesystem: {:?}\n",
+            self.disk_config.filesystem
+        ));
+        plan.push_str(&alloc::format!(
+            "  Bootloader: {:?}\n",
+            self.bootloader.bootloader_type
+        ));
         plan
     }
 }

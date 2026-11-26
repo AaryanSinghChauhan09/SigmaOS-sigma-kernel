@@ -173,26 +173,69 @@ impl<P: Ps2Port> Keyboard<P> {
 /// Covers the main typing block plus numpad digits/operators.
 fn lookup(sc: u8) -> Option<u8> {
     Some(match sc {
-        0x02 => b'1', 0x03 => b'2', 0x04 => b'3', 0x05 => b'4',
-        0x06 => b'5', 0x07 => b'6', 0x08 => b'7', 0x09 => b'8',
-        0x0A => b'9', 0x0B => b'0',
-        0x0C => b'-', 0x0D => b'=',
+        0x02 => b'1',
+        0x03 => b'2',
+        0x04 => b'3',
+        0x05 => b'4',
+        0x06 => b'5',
+        0x07 => b'6',
+        0x08 => b'7',
+        0x09 => b'8',
+        0x0A => b'9',
+        0x0B => b'0',
+        0x0C => b'-',
+        0x0D => b'=',
         0x0F => b'\t', // Tab
-        0x10 => b'q', 0x11 => b'w', 0x12 => b'e', 0x13 => b'r',
-        0x14 => b't', 0x15 => b'y', 0x16 => b'u', 0x17 => b'i',
-        0x18 => b'o', 0x19 => b'p', 0x1A => b'[', 0x1B => b']',
-        0x1E => b'a', 0x1F => b's', 0x20 => b'd', 0x21 => b'f',
-        0x22 => b'g', 0x23 => b'h', 0x24 => b'j', 0x25 => b'k',
-        0x26 => b'l', 0x27 => b';', 0x28 => b'\'', 0x29 => b'`',
-        0x2B => b'\\', 0x2C => b'z', 0x2D => b'x', 0x2E => b'c',
-        0x2F => b'v', 0x30 => b'b', 0x31 => b'n', 0x32 => b'm',
-        0x33 => b',', 0x34 => b'.', 0x35 => b'/',
+        0x10 => b'q',
+        0x11 => b'w',
+        0x12 => b'e',
+        0x13 => b'r',
+        0x14 => b't',
+        0x15 => b'y',
+        0x16 => b'u',
+        0x17 => b'i',
+        0x18 => b'o',
+        0x19 => b'p',
+        0x1A => b'[',
+        0x1B => b']',
+        0x1E => b'a',
+        0x1F => b's',
+        0x20 => b'd',
+        0x21 => b'f',
+        0x22 => b'g',
+        0x23 => b'h',
+        0x24 => b'j',
+        0x25 => b'k',
+        0x26 => b'l',
+        0x27 => b';',
+        0x28 => b'\'',
+        0x29 => b'`',
+        0x2B => b'\\',
+        0x2C => b'z',
+        0x2D => b'x',
+        0x2E => b'c',
+        0x2F => b'v',
+        0x30 => b'b',
+        0x31 => b'n',
+        0x32 => b'm',
+        0x33 => b',',
+        0x34 => b'.',
+        0x35 => b'/',
         0x39 => b' ', // Space
         // numpad (without NumLock we still emit digits/operators)
-        0x47 => b'7', 0x48 => b'8', 0x49 => b'9',
-        0x4A => b'-', 0x4B => b'4', 0x4C => b'5', 0x4D => b'6',
-        0x4E => b'+', 0x4F => b'1', 0x50 => b'2', 0x51 => b'3',
-        0x52 => b'0', 0x53 => b'.',
+        0x47 => b'7',
+        0x48 => b'8',
+        0x49 => b'9',
+        0x4A => b'-',
+        0x4B => b'4',
+        0x4C => b'5',
+        0x4D => b'6',
+        0x4E => b'+',
+        0x4F => b'1',
+        0x50 => b'2',
+        0x51 => b'3',
+        0x52 => b'0',
+        0x53 => b'.',
         _ => return None,
     })
 }
@@ -233,7 +276,9 @@ mod tests {
     }
 
     fn kb_with(scancodes: &[u8]) -> (Keyboard<FakePs2>, Rc<RefCell<VecDeque<u8>>>) {
-        let queue = Rc::new(RefCell::new(scancodes.iter().copied().collect::<VecDeque<_>>()));
+        let queue = Rc::new(RefCell::new(
+            scancodes.iter().copied().collect::<VecDeque<_>>(),
+        ));
         let status = Rc::new(RefCell::new(0u8));
         let port = FakePs2 {
             status,
@@ -247,7 +292,8 @@ mod tests {
     fn types_letters() {
         // 'a' = 0x1E, 'b' = 0x30
         let (mut kb, _q) = kb_with(&[0x1E, 0x30]);
-        kb.poll(); kb.poll();
+        kb.poll();
+        kb.poll();
         let ev = kb.drain();
         assert_eq!(ev, alloc::vec![Key::Char(b'a'), Key::Char(b'b')]);
     }
@@ -256,7 +302,9 @@ mod tests {
     fn shift_produces_uppercase() {
         // LShift make 0x2A, 'a' 0x1E, LShift break 0xAA
         let (mut kb, _q) = kb_with(&[0x2A, 0x1E, 0xAA]);
-        kb.poll(); kb.poll(); kb.poll();
+        kb.poll();
+        kb.poll();
+        kb.poll();
         let ev = kb.drain();
         assert_eq!(ev, alloc::vec![Key::Char(b'A')]);
     }
@@ -264,7 +312,8 @@ mod tests {
     #[test]
     fn enter_and_backspace() {
         let (mut kb, _q) = kb_with(&[0x1C, 0x0E]);
-        kb.poll(); kb.poll();
+        kb.poll();
+        kb.poll();
         let ev = kb.drain();
         assert_eq!(ev, alloc::vec![Key::Enter, Key::Backspace]);
     }
@@ -273,7 +322,9 @@ mod tests {
     fn ctrl_c_is_control_code() {
         // LCtrl 0x1D, 'c' 0x2E, LCtrl break 0x9D
         let (mut kb, _q) = kb_with(&[0x1D, 0x2E, 0x9D]);
-        kb.poll(); kb.poll(); kb.poll();
+        kb.poll();
+        kb.poll();
+        kb.poll();
         let ev = kb.drain();
         assert_eq!(ev, alloc::vec![Key::Char(0x03)]);
     }
@@ -282,7 +333,8 @@ mod tests {
     fn break_codes_ignored_for_typing() {
         // 'x' make then break — only one Char event
         let (mut kb, _q) = kb_with(&[0x2D, 0xAD]);
-        kb.poll(); kb.poll();
+        kb.poll();
+        kb.poll();
         let ev = kb.drain();
         assert_eq!(ev, alloc::vec![Key::Char(b'x')]);
     }

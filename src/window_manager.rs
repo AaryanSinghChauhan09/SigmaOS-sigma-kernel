@@ -3,7 +3,7 @@
 //! Grid-based tiling layout with focus management. Integrates with
 //! the compositor to position windows automatically.
 
-use crate::compositor::{Compositor, Rect, PixelFormat};
+use crate::compositor::{Compositor, PixelFormat, Rect};
 use crate::KernelError;
 use alloc::vec::Vec;
 
@@ -42,8 +42,15 @@ impl WindowManager {
     }
 
     /// Create a new window and add it to the tiling layout.
-    pub fn create_window(&mut self, title: &str, width: u32, height: u32) -> Result<u32, KernelError> {
-        let id = self.compositor.add(title, Rect::new(0, 0, width, height), PixelFormat::Xrgb8888);
+    pub fn create_window(
+        &mut self,
+        title: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<u32, KernelError> {
+        let id = self
+            .compositor
+            .add(title, Rect::new(0, 0, width, height), PixelFormat::Xrgb8888);
         self.focus_order.push(id);
         self.focused_id = Some(id);
         self.tile_windows();

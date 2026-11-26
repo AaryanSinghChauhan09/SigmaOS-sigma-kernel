@@ -1,8 +1,8 @@
 //! VirtIO-MMIO device driver for block device.
 
+use crate::virtio::{device, mmio, status as virtio_status, Mmio, VirtQueue, VIRTIO_MAGIC};
+use crate::virtio_blk::{req_type, BlkConfig, OutHeader};
 use crate::KernelError;
-use crate::virtio::{Mmio, mmio, device, status as virtio_status, VirtQueue, VIRTIO_MAGIC};
-use crate::virtio_blk::{BlkConfig, OutHeader, req_type};
 
 /// Simple VirtIO block device with MMIO transport.
 pub struct VirtioBlk {
@@ -45,14 +45,23 @@ impl VirtioBlk {
     /// Read one sector (simplified polling).
     pub fn read_sector(&mut self, sector: u64) -> Result<[u8; 512], KernelError> {
         let mut mmio = VirtioMmio { base: self.base };
-        let header = OutHeader { req_type: req_type::READ, sector };
+        let header = OutHeader {
+            req_type: req_type::READ,
+            sector,
+        };
         let enc = header.encode();
-        let desc_idx = self.queue.next_desc().ok_or(KernelError::Driver("queue full"))?;
+        let desc_idx = self
+            .queue
+            .next_desc()
+            .ok_or(KernelError::Driver("queue full"))?;
         let desc_addr = self.base + mmio::QUEUE_DESC_LOW as u64;
         mmio.write32((desc_addr + desc_idx as u64 * 16) as u32, enc[0] as u32);
         mmio.write32((desc_addr + desc_idx as u64 * 16 + 4) as u32, enc[4] as u32);
         mmio.write32((desc_addr + desc_idx as u64 * 16 + 8) as u32, enc[8] as u32);
-        mmio.write32((desc_addr + desc_idx as u64 * 16 + 12) as u32, enc[12] as u32);
+        mmio.write32(
+            (desc_addr + desc_idx as u64 * 16 + 12) as u32,
+            enc[12] as u32,
+        );
         mmio.write32(mmio::QUEUE_NOTIFY, 0);
         for _ in 0..10000 {
             let status = mmio.read32(mmio::INTERRUPT_STATUS);
@@ -71,14 +80,10 @@ struct VirtioMmio {
 
 impl Mmio for VirtioMmio {
     fn read32(&self, offset: u32) -> u32 {
-        unsafe {
-            ((self.base + offset as u64) as *const u32).read_volatile()
-        }
+        unsafe { ((self.base + offset as u64) as *const u32).read_volatile() }
     }
 
     fn write32(&mut self, offset: u32, value: u32) {
-        unsafe {
-            ((self.base + offset as u64) as *mut u32).write_volatile(value)
-        }
+        unsafe { ((self.base + offset as u64) as *mut u32).write_volatile(value) }
     }
 }

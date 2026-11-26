@@ -45,9 +45,15 @@ pub struct LoadSegment {
 }
 
 impl LoadSegment {
-    pub fn is_exec(&self) -> bool { self.flags & 1 != 0 }
-    pub fn is_write(&self) -> bool { self.flags & 2 != 0 }
-    pub fn is_read(&self) -> bool { self.flags & 4 != 0 }
+    pub fn is_exec(&self) -> bool {
+        self.flags & 1 != 0
+    }
+    pub fn is_write(&self) -> bool {
+        self.flags & 2 != 0
+    }
+    pub fn is_read(&self) -> bool {
+        self.flags & 4 != 0
+    }
 }
 
 fn u16le(b: &[u8], off: usize) -> u16 {
@@ -122,11 +128,7 @@ pub fn load_segments(image: &[u8], hdr: &ElfHeader) -> Result<Vec<LoadSegment>, 
 /// Total span of the loaded image (min vaddr .. max vaddr+memsz).
 pub fn image_span(segs: &[LoadSegment]) -> (u64, u64) {
     let lo = segs.iter().map(|s| s.vaddr).min().unwrap_or(0);
-    let hi = segs
-        .iter()
-        .map(|s| s.vaddr + s.memsz)
-        .max()
-        .unwrap_or(0);
+    let hi = segs.iter().map(|s| s.vaddr + s.memsz).max().unwrap_or(0);
     (lo, hi)
 }
 
@@ -153,14 +155,14 @@ mod tests {
         e[32..40].copy_from_slice(&64u64.to_le_bytes()); // phoff
         e[54..56].copy_from_slice(&56u16.to_le_bytes()); // phentsize
         e[56..58].copy_from_slice(&1u16.to_le_bytes()); // phnum
-        // phdr at 64
+                                                        // phdr at 64
         e[64..68].copy_from_slice(&PT_LOAD.to_le_bytes());
         e[68..72].copy_from_slice(&5u32.to_le_bytes()); // R+X
         e[72..80].copy_from_slice(&0x1000u64.to_le_bytes()); // offset
         e[80..88].copy_from_slice(&vaddr.to_le_bytes());
         e[88..96].copy_from_slice(&0x1000u64.to_le_bytes()); // vaddr hi? no—paddr
-        e[96..104].copy_from_slice(&filesz.to_le_bytes());   // p_filesz @+32
-        e[104..112].copy_from_slice(&memsz.to_le_bytes());   // p_memsz @+40
+        e[96..104].copy_from_slice(&filesz.to_le_bytes()); // p_filesz @+32
+        e[104..112].copy_from_slice(&memsz.to_le_bytes()); // p_memsz @+40
         e[112..120].copy_from_slice(&0x1000u64.to_le_bytes()); // p_align @+48
         e
     }
@@ -204,8 +206,22 @@ mod tests {
     #[test]
     fn image_span_and_highest() {
         let segs = vec![
-            LoadSegment { vaddr: 0x400000, offset: 0, filesz: 0x100, memsz: 0x100, flags: 5, align: 0x1000 },
-            LoadSegment { vaddr: 0x401000, offset: 0, filesz: 0x80, memsz: 0x200, flags: 6, align: 0x1000 },
+            LoadSegment {
+                vaddr: 0x400000,
+                offset: 0,
+                filesz: 0x100,
+                memsz: 0x100,
+                flags: 5,
+                align: 0x1000,
+            },
+            LoadSegment {
+                vaddr: 0x401000,
+                offset: 0,
+                filesz: 0x80,
+                memsz: 0x200,
+                flags: 6,
+                align: 0x1000,
+            },
         ];
         let (lo, hi) = image_span(&segs);
         assert_eq!(lo, 0x400000);

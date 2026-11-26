@@ -98,7 +98,12 @@ impl<B: ScreenBuf> TextConsole<B> {
         for i in 0..buf.len().min(CELLS) {
             buf.put(i, cell(b' ', attr));
         }
-        Self { buf, col: 0, row: 0, attr }
+        Self {
+            buf,
+            col: 0,
+            row: 0,
+            attr,
+        }
     }
 
     /// Set the active attribute for subsequent writes.

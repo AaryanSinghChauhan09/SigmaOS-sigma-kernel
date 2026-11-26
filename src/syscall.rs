@@ -44,7 +44,14 @@ pub const ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "r10", "r8", "r9"];
 pub fn arity(nr: u64) -> usize {
     match nr {
         nr::READ | nr::WRITE | nr::OPEN | nr::STAT | nr::SPAWN | nr::WAIT | nr::PIPE => 3,
-        nr::CLOSE | nr::EXIT | nr::GETPID | nr::GETTID | nr::FB_FLUSH | nr::TIME | nr::FORK | nr::KILL => 0,
+        nr::CLOSE
+        | nr::EXIT
+        | nr::GETPID
+        | nr::GETTID
+        | nr::FB_FLUSH
+        | nr::TIME
+        | nr::FORK
+        | nr::KILL => 0,
         nr::RAND | nr::KERNEL_INFO => 2,
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
@@ -78,44 +85,96 @@ pub trait KernelServices {
     fn kernel_version(&self) -> &'static str;
 
     /// Open `path` (user ptr+len) with `flags`; returns fd or -errno.
-    fn open(&mut self, _path_ptr: u64, _path_len: u64, _flags: u64) -> i64 { ENOSYS }
+    fn open(&mut self, _path_ptr: u64, _path_len: u64, _flags: u64) -> i64 {
+        ENOSYS
+    }
     /// Read `len` bytes into user `ptr` from `fd`; returns count/-errno.
-    fn read(&mut self, _fd: u64, _ptr: u64, _len: u64) -> i64 { ENOSYS }
+    fn read(&mut self, _fd: u64, _ptr: u64, _len: u64) -> i64 {
+        ENOSYS
+    }
     /// Close `fd`.
-    fn close(&mut self, _fd: u64) -> i64 { ENOSYS }
+    fn close(&mut self, _fd: u64) -> i64 {
+        ENOSYS
+    }
     /// List directory `path` (ptr+len) into user `buf` (ptr+len).
     /// Returns bytes written or -errno.
-    fn listdir(&mut self, _p_ptr: u64, _p_len: u64, _b_ptr: u64, _b_len: u64) -> i64 { ENOSYS }
+    fn listdir(&mut self, _p_ptr: u64, _p_len: u64, _b_ptr: u64, _b_len: u64) -> i64 {
+        ENOSYS
+    }
     /// Copy kernel version into user `ptr` (up to `len`); returns len.
-    fn kernel_info(&mut self, _ptr: u64, _len: u64) -> i64 { ENOSYS }
+    fn kernel_info(&mut self, _ptr: u64, _len: u64) -> i64 {
+        ENOSYS
+    }
     /// Monotonic time (ticks).
-    fn time(&mut self) -> i64 { ENOSYS }
+    fn time(&mut self) -> i64 {
+        ENOSYS
+    }
     /// Fill user `ptr` with `len` random bytes; returns len.
-    fn rand(&mut self, _ptr: u64, _len: u64) -> i64 { ENOSYS }
+    fn rand(&mut self, _ptr: u64, _len: u64) -> i64 {
+        ENOSYS
+    }
     /// Extend/reduce the program break; `addr`=0 queries current.
     /// Returns new break or -errno.
-    fn brk(&mut self, _addr: u64) -> i64 { ENOSYS }
+    fn brk(&mut self, _addr: u64) -> i64 {
+        ENOSYS
+    }
     /// Map `len` anonymous bytes at `addr` (0 = pick); returns addr/-errno.
-    fn mmap(&mut self, _addr: u64, _len: u64) -> i64 { ENOSYS }
+    fn mmap(&mut self, _addr: u64, _len: u64) -> i64 {
+        ENOSYS
+    }
     /// Unmap `len` bytes at `addr`; returns 0/-errno.
-    fn munmap(&mut self, _addr: u64, _len: u64) -> i64 { ENOSYS }
+    fn munmap(&mut self, _addr: u64, _len: u64) -> i64 {
+        ENOSYS
+    }
     /// Fork current process; returns child pid in parent, 0 in child, -errno on error.
-    fn fork(&mut self) -> i64 { ENOSYS }
+    fn fork(&mut self) -> i64 {
+        ENOSYS
+    }
     /// Exec new program at `path` (ptr+len) with `argv` (ptr+len) and `envp` (ptr+len).
     /// Does not return on success; returns -errno on error.
-    fn exec(&mut self, _path_ptr: u64, _path_len: u64, _argv_ptr: u64, _argv_len: u64, _envp_ptr: u64, _envp_len: u64) -> i64 { ENOSYS }
+    fn exec(
+        &mut self,
+        _path_ptr: u64,
+        _path_len: u64,
+        _argv_ptr: u64,
+        _argv_len: u64,
+        _envp_ptr: u64,
+        _envp_len: u64,
+    ) -> i64 {
+        ENOSYS
+    }
     /// Create a pipe; returns read fd in lower 32 bits, write fd in upper 32 bits.
-    fn pipe(&mut self) -> i64 { ENOSYS }
+    fn pipe(&mut self) -> i64 {
+        ENOSYS
+    }
     /// Duplicate a file descriptor.
-    fn dup(&mut self, _fd: u64) -> i64 { ENOSYS }
+    fn dup(&mut self, _fd: u64) -> i64 {
+        ENOSYS
+    }
     /// Duplicate a file descriptor to a specific fd number.
-    fn dup2(&mut self, _oldfd: u64, _newfd: u64) -> i64 { ENOSYS }
+    fn dup2(&mut self, _oldfd: u64, _newfd: u64) -> i64 {
+        ENOSYS
+    }
     /// Send a signal to a process.
-    fn kill(&mut self, _pid: u64, _signal: u64) -> i64 { ENOSYS }
+    fn kill(&mut self, _pid: u64, _signal: u64) -> i64 {
+        ENOSYS
+    }
     /// Mount a filesystem.
-    fn mount(&mut self, _source: u64, _source_len: u64, _target: u64, _target_len: u64, _fstype: u64, _fstype_len: u64) -> i64 { ENOSYS }
+    fn mount(
+        &mut self,
+        _source: u64,
+        _source_len: u64,
+        _target: u64,
+        _target_len: u64,
+        _fstype: u64,
+        _fstype_len: u64,
+    ) -> i64 {
+        ENOSYS
+    }
     /// Unmount a filesystem.
-    fn umount(&mut self, _target: u64, _target_len: u64) -> i64 { ENOSYS }
+    fn umount(&mut self, _target: u64, _target_len: u64) -> i64 {
+        ENOSYS
+    }
 }
 
 pub const ENOSYS: i64 = -38;
@@ -173,8 +232,8 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
-    use alloc::vec::Vec;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     struct Mock {
         written: Vec<(u64, u64, u64)>,
@@ -189,13 +248,20 @@ mod dispatch_tests {
             // can't diverge in test; use a flag instead via panic-free path
             core::panic!("exit")
         }
-        fn pid(&self) -> u64 { self.pid }
-        fn kernel_version(&self) -> &'static str { "0.1.0" }
+        fn pid(&self) -> u64 {
+            self.pid
+        }
+        fn kernel_version(&self) -> &'static str {
+            "0.1.0"
+        }
     }
 
     #[test]
     fn write_dispatches() {
-        let mut m = Mock { written: Vec::new(), pid: 7 };
+        let mut m = Mock {
+            written: Vec::new(),
+            pid: 7,
+        };
         let args = [1u64, 0x1000, 5, 0, 0, 0];
         assert_eq!(dispatch(nr::WRITE, &args, &mut m), 5);
         assert_eq!(m.written, vec![(1, 0x1000, 5)]);
@@ -203,21 +269,30 @@ mod dispatch_tests {
 
     #[test]
     fn write_bad_fd() {
-        let mut m = Mock { written: Vec::new(), pid: 1 };
+        let mut m = Mock {
+            written: Vec::new(),
+            pid: 1,
+        };
         let args = [9u64, 0x1000, 5, 0, 0, 0];
         assert_eq!(dispatch(nr::WRITE, &args, &mut m), EBADF);
     }
 
     #[test]
     fn getpid() {
-        let mut m = Mock { written: Vec::new(), pid: 42 };
+        let mut m = Mock {
+            written: Vec::new(),
+            pid: 42,
+        };
         let args = [0u64; 6];
         assert_eq!(dispatch(nr::GETPID, &args, &mut m), 42);
     }
 
     #[test]
     fn unknown_is_enosys() {
-        let mut m = Mock { written: Vec::new(), pid: 1 };
+        let mut m = Mock {
+            written: Vec::new(),
+            pid: 1,
+        };
         let args = [0u64; 6];
         assert_eq!(dispatch(99, &args, &mut m), ENOSYS);
         assert_eq!(dispatch(nr::MMAP, &args, &mut m), ENOSYS);

@@ -3,12 +3,12 @@
 //! The initramfs is a cpio newc archive unpacked into memory at boot;
 //! `Initramfs` implements directory lookup and file read.
 
+use crate::KernelError;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::KernelError;
 
 /// A file or directory entry.
 #[derive(Debug, Clone)]
@@ -52,11 +52,14 @@ impl Vfs {
     /// Create an empty VFS with a root directory.
     pub fn new() -> Self {
         let mut mounts = BTreeMap::new();
-        mounts.insert("/".into(), MountEntry {
-            path: "/".into(),
-            kind: FsKind::Initramfs,
-            dev: 0,
-        });
+        mounts.insert(
+            "/".into(),
+            MountEntry {
+                path: "/".into(),
+                kind: FsKind::Initramfs,
+                dev: 0,
+            },
+        );
         Self {
             nodes: vec![VfsNode {
                 name: "/".into(),
@@ -72,18 +75,23 @@ impl Vfs {
     /// Mount a filesystem at `path`. Returns error if path is not a dir
     /// or already mounted.
     pub fn mount(&mut self, path: &str, kind: FsKind, dev: u32) -> Result<(), KernelError> {
-        let idx = self.lookup(path).ok_or(KernelError::Fs("mount point not found"))?;
+        let idx = self
+            .lookup(path)
+            .ok_or(KernelError::Fs("mount point not found"))?;
         if !self.nodes[idx].is_dir {
             return Err(KernelError::Fs("mount point is not a directory"));
         }
         if self.mounts.contains_key(path) {
             return Err(KernelError::Fs("already mounted"));
         }
-        self.mounts.insert(path.to_string(), MountEntry {
-            path: path.to_string(),
-            kind,
-            dev,
-        });
+        self.mounts.insert(
+            path.to_string(),
+            MountEntry {
+                path: path.to_string(),
+                kind,
+                dev,
+            },
+        );
         Ok(())
     }
 
@@ -289,9 +297,8 @@ pub fn cpio_newc_write(entries: &[(&str, &[u8])]) -> Vec<u8> {
     }
     // trailer
     let trailer = [
-        "00000000", "00000000", "00000000", "00000000", "00000001",
-        "00000000", "00000000", "00000000", "00000000", "00000000",
-        "00000000", "0000000b", "00000000",
+        "00000000", "00000000", "00000000", "00000000", "00000001", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000", "0000000b", "00000000",
     ]
     .concat();
     out.extend_from_slice(b"070701");
@@ -309,10 +316,8 @@ mod tests {
 
     #[test]
     fn roundtrip_cpio() {
-        let archive = cpio_newc_write(&[
-            ("/bin/sh", b"#!/bin/sh\n"),
-            ("/etc/hostname", b"sigmaos\n"),
-        ]);
+        let archive =
+            cpio_newc_write(&[("/bin/sh", b"#!/bin/sh\n"), ("/etc/hostname", b"sigmaos\n")]);
         let mut vfs = Vfs::new();
         vfs.load_cpio_newc(&archive).unwrap();
         assert_eq!(vfs.read("/bin/sh"), Some(&b"#!/bin/sh\n"[..]));

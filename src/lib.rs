@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+pub mod agent;
 pub mod boot;
 pub mod compositor;
 pub mod console;
@@ -25,14 +26,13 @@ pub mod syscall;
 pub mod theme;
 pub mod uart;
 pub mod usermem;
+pub mod vfs;
 pub mod virtio;
 pub mod virtio_blk;
 pub mod virtio_gpu;
 pub mod virtio_mmio;
 pub mod virtio_net;
-pub mod vfs;
 pub mod window_manager;
-pub mod agent;
 
 pub use error::KernelError;
 

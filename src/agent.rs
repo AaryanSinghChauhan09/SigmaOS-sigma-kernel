@@ -59,7 +59,9 @@ impl AgentManager {
     /// - Send the command via IPC
     /// - Collect the result
     pub fn execute(&mut self, agent_id: u32, command: &str) -> Result<AgentResult, String> {
-        let agent = self.agents.iter()
+        let agent = self
+            .agents
+            .iter()
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("agent {} not found", agent_id))?;
 
@@ -95,7 +97,9 @@ impl AgentManager {
 
     /// Enable an agent.
     pub fn enable(&mut self, agent_id: u32) -> Result<(), String> {
-        let agent = self.agents.iter_mut()
+        let agent = self
+            .agents
+            .iter_mut()
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("agent {} not found", agent_id))?;
         agent.enabled = true;
@@ -104,7 +108,9 @@ impl AgentManager {
 
     /// Disable an agent.
     pub fn disable(&mut self, agent_id: u32) -> Result<(), String> {
-        let agent = self.agents.iter_mut()
+        let agent = self
+            .agents
+            .iter_mut()
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("agent {} not found", agent_id))?;
         agent.enabled = false;
@@ -123,7 +129,8 @@ impl AgentManager {
 
     /// Find agents with a specific capability.
     pub fn find_by_capability(&self, capability: &str) -> Vec<&Agent> {
-        self.agents.iter()
+        self.agents
+            .iter()
             .filter(|a| a.capabilities.iter().any(|c| c == capability))
             .collect()
     }
@@ -179,7 +186,9 @@ impl PluginManager {
     /// - Unload the module
     /// - Free resources
     pub fn unload(&mut self, plugin_id: u32) -> Result<(), String> {
-        let index = self.plugins.iter()
+        let index = self
+            .plugins
+            .iter()
             .position(|p| p.id == plugin_id)
             .ok_or_else(|| format!("plugin {} not found", plugin_id))?;
 

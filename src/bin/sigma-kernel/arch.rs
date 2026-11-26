@@ -7,13 +7,17 @@ const VGA_TEXT: usize = 0xB8000;
 
 fn outb(port: u16, val: u8) {
     // SAFETY: port I/O to the standard COM1 UART.
-    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nostack)); }
+    unsafe {
+        core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nostack));
+    }
 }
 
 fn inb(port: u16) -> u8 {
     let v: u8;
     // SAFETY: port I/O read from COM1 line-status register.
-    unsafe { core::arch::asm!("in al, dx", out("al") v, in("dx") port, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("in al, dx", out("al") v, in("dx") port, options(nomem, nostack));
+    }
     v
 }
 
@@ -173,7 +177,9 @@ impl kernel::syscall::KernelServices for KernelSvc {
     fn exit(&mut self, code: u64) -> ! {
         log("sigma-kernel: user process exited\n");
         self.con.println(&alloc::format!("process exit {}", code));
-        loop { core::hint::spin_loop() }
+        loop {
+            core::hint::spin_loop()
+        }
     }
     fn pid(&self) -> u64 {
         1 // single-process kernel for now
@@ -190,7 +196,15 @@ impl kernel::syscall::KernelServices for KernelSvc {
         // 4. Return child pid in parent, 0 in child
         -38 // ENOSYS
     }
-    fn exec(&mut self, _path_ptr: u64, _path_len: u64, _argv_ptr: u64, _argv_len: u64, _envp_ptr: u64, _envp_len: u64) -> i64 {
+    fn exec(
+        &mut self,
+        _path_ptr: u64,
+        _path_len: u64,
+        _argv_ptr: u64,
+        _argv_len: u64,
+        _envp_ptr: u64,
+        _envp_len: u64,
+    ) -> i64 {
         // Simplified exec: return ENOSYS for now
         // Full implementation requires:
         // 1. Load ELF from path
@@ -234,13 +248,17 @@ impl kernel::syscall::KernelServices for TrapSvc {
     }
     fn exit(&mut self, code: u64) -> ! {
         log("sigma-kernel: user exit\n");
-        loop { core::hint::spin_loop() }
+        loop {
+            core::hint::spin_loop()
+        }
     }
     fn pid(&self) -> u64 {
         // SAFETY: single-threaded syscall context.
         unsafe { crate::PROCS[crate::CUR_PROC].pid }
     }
-    fn kernel_version(&self) -> &'static str { kernel::KERNEL_VERSION }
+    fn kernel_version(&self) -> &'static str {
+        kernel::KERNEL_VERSION
+    }
     fn open(&mut self, path_ptr: u64, path_len: u64, flags: u64) -> i64 {
         self.sys_open(path_ptr, path_len, flags)
     }
@@ -271,7 +289,15 @@ impl kernel::syscall::KernelServices for TrapSvc {
         // 4. Return child pid in parent, 0 in child
         -38 // ENOSYS
     }
-    fn exec(&mut self, _path_ptr: u64, _path_len: u64, _argv_ptr: u64, _argv_len: u64, _envp_ptr: u64, _envp_len: u64) -> i64 {
+    fn exec(
+        &mut self,
+        _path_ptr: u64,
+        _path_len: u64,
+        _argv_ptr: u64,
+        _argv_len: u64,
+        _envp_ptr: u64,
+        _envp_len: u64,
+    ) -> i64 {
         // Simplified exec: return ENOSYS for now
         // Full implementation requires:
         // 1. Load ELF from path
@@ -292,7 +318,15 @@ impl kernel::syscall::KernelServices for TrapSvc {
     fn kill(&mut self, pid: u64, signal: u64) -> i64 {
         self.sys_kill(pid, signal)
     }
-    fn mount(&mut self, _source: u64, _source_len: u64, _target: u64, _target_len: u64, _fstype: u64, _fstype_len: u64) -> i64 {
+    fn mount(
+        &mut self,
+        _source: u64,
+        _source_len: u64,
+        _target: u64,
+        _target_len: u64,
+        _fstype: u64,
+        _fstype_len: u64,
+    ) -> i64 {
         -38 // ENOSYS - requires VFS mount support
     }
     fn umount(&mut self, _target: u64, _target_len: u64) -> i64 {
@@ -319,10 +353,7 @@ impl kernel::syscall::KernelServices for TrapSvc {
             let end = (addr + PAGE - 1) & !(PAGE - 1);
             let mut v = cur & !(PAGE - 1);
             while v < end {
-                let phys = match crate::USER_ALLOC
-                    .as_mut()
-                    .and_then(|a| a.alloc_frame())
-                {
+                let phys = match crate::USER_ALLOC.as_mut().and_then(|a| a.alloc_frame()) {
                     Some(p) => p,
                     None => return ENOMEM,
                 };
@@ -393,10 +424,7 @@ impl kernel::syscall::KernelServices for TrapSvc {
             let end = (base + len + PAGE - 1) & !(PAGE - 1);
             let mut v = base;
             while v < end {
-                let phys = match crate::USER_ALLOC
-                    .as_mut()
-                    .and_then(|a| a.alloc_frame())
-                {
+                let phys = match crate::USER_ALLOC.as_mut().and_then(|a| a.alloc_frame()) {
                     Some(p) => p,
                     None => return ENOMEM,
                 };
@@ -441,13 +469,9 @@ impl kernel::syscall::KernelServices for TrapSvc {
             let pml4 = crate::USER_PML4;
             let mut v = addr;
             while v < end {
-                if let Some((pte, e)) =
-                    kernel::usermem::user_pte(pml4, v, &IdentityPhysMem)
-                {
+                if let Some((pte, e)) = kernel::usermem::user_pte(pml4, v, &IdentityPhysMem) {
                     if e & kernel::usermem::P_USER != 0 {
-                        kernel::usermem::PhysMem::write_u64(
-                            &mut IdentityPhysMem, pte, 0,
-                        );
+                        kernel::usermem::PhysMem::write_u64(&mut IdentityPhysMem, pte, 0);
                         if let Some(a) = crate::USER_ALLOC.as_mut() {
                             a.free_frame(e & !0xfff);
                         }
@@ -521,9 +545,8 @@ impl TrapSvc {
             return -22; // EINVAL
         }
         // SAFETY: user path buffer is mapped under active CR3.
-        let bytes = unsafe {
-            core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
         let path = match core::str::from_utf8(bytes) {
             Ok(s) => s,
             Err(_) => return -14, // EFAULT
@@ -584,11 +607,7 @@ impl TrapSvc {
         let n = (len as usize).min(data.len() - off);
         // SAFETY: user buf mapped; n <= remaining file bytes.
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                data[off..off + n].as_ptr(),
-                ptr as *mut u8,
-                n,
-            );
+            core::ptr::copy_nonoverlapping(data[off..off + n].as_ptr(), ptr as *mut u8, n);
         }
         f.off += n as u64;
         n as i64
@@ -612,7 +631,9 @@ impl TrapSvc {
                         break;
                     }
                 }
-                if any_write { break; }
+                if any_write {
+                    break;
+                }
             }
             return if any_write { -11 } else { 0 }; // EAGAIN or EOF
         }
@@ -747,11 +768,11 @@ impl TrapSvc {
     fn sys_kill(&mut self, pid: u64, signal: u64) -> i64 {
         const SIGKILL: u64 = 9;
         const SIGTERM: u64 = 15;
-        
+
         if pid == 0 {
             return -22; // EINVAL - can't kill self/group
         }
-        
+
         unsafe {
             for i in 0..crate::NPROCS {
                 if crate::PROCS[i].used && crate::PROCS[i].pid == pid {
@@ -799,7 +820,7 @@ impl TrapSvc {
         };
         let names = unsafe { crate::sys_vfs() }.list(path);
         let Some(names) = names else { return -2 }; // ENOENT
-        // join with '\n'
+                                                    // join with '\n'
         let mut out = alloc::string::String::new();
         for (i, n) in names.iter().enumerate() {
             if i > 0 {
@@ -814,5 +835,4 @@ impl TrapSvc {
         }
         n as i64
     }
-
 }

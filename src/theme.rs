@@ -43,8 +43,8 @@ impl Theme {
             name: String::from(name),
             background_color: 0x1a1a2e, // dark blue-purple
             foreground_color: 0xe0e0e0, // light gray
-            accent_color: 0x16213e, // deep blue
-            border_color: 0x0f3460, // blue border
+            accent_color: 0x16213e,     // deep blue
+            border_color: 0x0f3460,     // blue border
             font_name: String::from("default"),
             font_size: 12,
         }
@@ -118,7 +118,8 @@ impl Theme {
                     }
                     "font" => theme.font_name = String::from(value),
                     "font_size" => {
-                        theme.font_size = value.parse::<u32>()
+                        theme.font_size = value
+                            .parse::<u32>()
                             .map_err(|_| format!("invalid font_size: {}", value))?;
                     }
                     _ => {} // ignore unknown keys

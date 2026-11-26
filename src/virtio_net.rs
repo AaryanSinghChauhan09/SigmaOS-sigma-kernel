@@ -106,7 +106,12 @@ impl NetConfig {
     pub fn mac_string(&self) -> alloc::string::String {
         alloc::format!(
             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            self.mac[0], self.mac[1], self.mac[2], self.mac[3], self.mac[4], self.mac[5]
+            self.mac[0],
+            self.mac[1],
+            self.mac[2],
+            self.mac[3],
+            self.mac[4],
+            self.mac[5]
         )
     }
 }
@@ -157,7 +162,11 @@ impl NetCodec {
 
     /// Header size for this device.
     pub fn header_len(&self) -> usize {
-        if self.modern { hdr::MODERN } else { hdr::LEGACY }
+        if self.modern {
+            hdr::MODERN
+        } else {
+            hdr::LEGACY
+        }
     }
 
     /// Build a TX buffer: virtio-net header + ethernet frame.

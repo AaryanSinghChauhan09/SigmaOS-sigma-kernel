@@ -67,7 +67,7 @@ impl<P: UartPort> Uart<P> {
         port.write(regs::LCR, LCR_8N1);
         // enable FIFOs
         port.write(regs::FCR, 0xC7); // enable + clear + 14-byte trigger
-        // loopback test bit optional; RTS/DTR via MCR
+                                     // loopback test bit optional; RTS/DTR via MCR
         port.write(regs::MCR, 0x03);
         Self {
             port,

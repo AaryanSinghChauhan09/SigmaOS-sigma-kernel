@@ -3,9 +3,9 @@
 //! The allocator is seeded from Multiboot2 usable regions. All state
 //! is `alloc`-backed so it is testable on host.
 
-use alloc::vec::Vec;
 use crate::boot::MemRegion;
 use crate::KernelError;
+use alloc::vec::Vec;
 
 /// Frame size in bytes.
 pub const FRAME_SIZE: u64 = 4096;
@@ -42,7 +42,10 @@ impl FrameAllocator {
                 continue;
             }
             let frames = (end - start) / FRAME_SIZE;
-            areas.push(Area { start_frame: start / FRAME_SIZE, frames });
+            areas.push(Area {
+                start_frame: start / FRAME_SIZE,
+                frames,
+            });
             total += frames;
         }
         if total == 0 {
@@ -169,7 +172,11 @@ mod tests {
     use super::*;
 
     fn region(start: u64, len: u64) -> MemRegion {
-        MemRegion { start, len, mem_type: 1 }
+        MemRegion {
+            start,
+            len,
+            mem_type: 1,
+        }
     }
 
     #[test]
@@ -194,7 +201,11 @@ mod tests {
     #[test]
     fn skips_non_usable() {
         let regs = [
-            MemRegion { start: 0, len: 0x1000, mem_type: 2 },
+            MemRegion {
+                start: 0,
+                len: 0x1000,
+                mem_type: 2,
+            },
             region(0x100000, 0x10000),
         ];
         let a = FrameAllocator::new(&regs).unwrap();

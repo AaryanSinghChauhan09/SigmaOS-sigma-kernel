@@ -56,8 +56,12 @@ pub const USER_STACK_TOP: u64 = 0x800000 + USER_STACK_PAGES * FRAME_SIZE;
 /// 2 MiB of identity-mapped memory.
 pub const USER_LOAD_BIAS: u64 = 0x400000;
 
-fn page_align_down(x: u64) -> u64 { x & !(FRAME_SIZE - 1) }
-fn page_align_up(x: u64) -> u64 { (x + FRAME_SIZE - 1) & !(FRAME_SIZE - 1) }
+fn page_align_down(x: u64) -> u64 {
+    x & !(FRAME_SIZE - 1)
+}
+fn page_align_up(x: u64) -> u64 {
+    (x + FRAME_SIZE - 1) & !(FRAME_SIZE - 1)
+}
 
 /// Load `image` (ELF64 bytes) into `alloc`.
 ///
@@ -70,10 +74,7 @@ fn page_align_up(x: u64) -> u64 { (x + FRAME_SIZE - 1) & !(FRAME_SIZE - 1) }
 /// SAFETY of the returned image depends on the caller mapping
 /// `segments[].phys` at `segments[].vaddr` in a user page table and
 /// providing a writable stack at the top of the user address space.
-pub fn load_image(
-    image: &[u8],
-    alloc: &mut FrameAllocator,
-) -> Result<UserImage, KernelError> {
+pub fn load_image(image: &[u8], alloc: &mut FrameAllocator) -> Result<UserImage, KernelError> {
     let hdr = parse_header(image)?;
     let segs = load_segments(image, &hdr)?;
     let (lo, hi) = image_span(&segs);
@@ -81,7 +82,11 @@ pub fn load_image(
     // ET_DYN (PIE) images are linked at base 0 — relocate them to a
     // user bias clear of the kernel's low identity map so user pages
     // never overlap kernel memory. ET_EXEC keeps its linked vaddrs.
-    let bias = if hdr.etype == ET_DYN { USER_LOAD_BIAS } else { 0 };
+    let bias = if hdr.etype == ET_DYN {
+        USER_LOAD_BIAS
+    } else {
+        0
+    };
     let mut loaded = Vec::with_capacity(segs.len());
     for s in &segs {
         let mut s2 = s.clone();
@@ -210,22 +215,28 @@ mod tests {
 
     fn test_alloc() -> FrameAllocator {
         // one big usable region
-        FrameAllocator::new(&[MemRegion { start: 0x100000, len: 0x1000000, mem_type: 1 }]).unwrap()
+        FrameAllocator::new(&[MemRegion {
+            start: 0x100000,
+            len: 0x1000000,
+            mem_type: 1,
+        }])
+        .unwrap()
     }
 
     /// Minimal ELF64 with one PT_LOAD covering the whole file.
     fn elf_image() -> Vec<u8> {
         let mut e = vec![0u8; 8192];
         e[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-        e[4] = 2; e[5] = 1;
+        e[4] = 2;
+        e[5] = 1;
         e[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
         e[18..20].copy_from_slice(&62u16.to_le_bytes()); // x86_64
         e[24..32].copy_from_slice(&0x401000u64.to_le_bytes()); // entry
         e[32..40].copy_from_slice(&64u64.to_le_bytes()); // phoff
         e[54..56].copy_from_slice(&56u16.to_le_bytes());
         e[56..58].copy_from_slice(&1u16.to_le_bytes()); // phnum
-        // phdr @64: PT_LOAD, R+X, offset 0, vaddr 0x400000,
-        // filesz=memsz=0x2000
+                                                        // phdr @64: PT_LOAD, R+X, offset 0, vaddr 0x400000,
+                                                        // filesz=memsz=0x2000
         e[64..68].copy_from_slice(&1u32.to_le_bytes());
         e[68..72].copy_from_slice(&5u32.to_le_bytes());
         e[80..88].copy_from_slice(&0x400000u64.to_le_bytes());
@@ -265,7 +276,10 @@ mod tests {
         // all have USER bit (bit 2 = 4)
         assert!(maps.iter().all(|&(_, _, f)| f & 4 != 0));
         // stack pages are writable
-        let stack_maps: Vec<_> = maps.iter().filter(|(v, _, _)| *v >= USER_STACK_TOP - 8 * FRAME_SIZE).collect();
+        let stack_maps: Vec<_> = maps
+            .iter()
+            .filter(|(v, _, _)| *v >= USER_STACK_TOP - 8 * FRAME_SIZE)
+            .collect();
         assert!(stack_maps.iter().all(|&(_, _, f)| f & 2 != 0));
     }
 
