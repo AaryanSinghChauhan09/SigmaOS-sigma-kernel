@@ -859,32 +859,80 @@ impl TrapSvc {
         n as i64
     }
 
-    /// pipe_read(pipe_id, ptr, len): read bytes from a pipe buffer.
-    /// Returns bytes read, 0 on EOF (write end closed), -11 if empty.
+    /// True while any non-exited process holds a write fd for `pipe_id`.
+    unsafe fn pipe_has_writer(pipe_id: usize) -> bool {
+        for i in 0..crate::NPROCS {
+            if crate::PROCS[i].exited {
+                continue;
+            }
+            for fd in 0..crate::MAX_FDS {
+                let f = &crate::PROCS[i].fds[fd];
+                if f.used && f.kind == crate::FD_PIPE_WRITE && f.pipe_id as usize == pipe_id {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// True while any non-exited process holds a read fd for `pipe_id`.
+    unsafe fn pipe_has_reader(pipe_id: usize) -> bool {
+        for i in 0..crate::NPROCS {
+            if crate::PROCS[i].exited {
+                continue;
+            }
+            for fd in 0..crate::MAX_FDS {
+                let f = &crate::PROCS[i].fds[fd];
+                if f.used && f.kind == crate::FD_PIPE_READ && f.pipe_id as usize == pipe_id {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Wake processes blocked on `pipe_id` in one direction
+    /// (`for_write` selects writers vs readers). Each woken proc's
+    /// syscall returns EAGAIN so userspace retries the operation.
+    unsafe fn wake_pipe(pipe_id: usize, for_write: bool) {
+        crate::arch::wake_pipe_waiters(pipe_id, for_write);
+    }
+
+    /// Block the current process on `pipe_id` until `wake_pipe` clears
+    /// it, then return -11 (EAGAIN). The woken proc resumes in user
+    /// mode with ctx.rax=-11 and retries the syscall — same pattern as
+    /// sys_wait's sleep/wake. Returns -11 immediately when no other
+    /// process is runnable.
+    unsafe fn block_on_pipe(&mut self, pipe_id: usize, for_write: bool) -> i64 {
+        let cur = crate::CUR_PROC;
+        if let Some(j) = crate::next_runnable(cur) {
+            crate::PROCS[cur].sleeping = true;
+            crate::PROCS[cur].wait_pipe = pipe_id as u64 + 1;
+            crate::PROCS[cur].wait_pipe_wr = for_write;
+            crate::switch_to(j);
+        }
+        -11 // EAGAIN: retry (also the no-runnable-process case)
+    }
+
+    /// pipe_read(pipe_id, ptr, len): read from a pipe buffer, blocking
+    /// while empty if any write end is still open. Returns bytes read,
+    /// 0 on EOF (all write ends closed), -11 on wake (retry).
     fn sys_pipe_read(&mut self, pipe_id: usize, ptr: u64, len: u64) -> i64 {
         if pipe_id >= crate::MAX_PIPES {
             return -9; // EBADF
         }
         let p = unsafe { &mut crate::PIPES[pipe_id] };
-        if !p.used || p.count == 0 {
-            // Check if any write fd still references this pipe.
-            let mut any_write = false;
-            for i in 0..crate::NPROCS {
-                for fd in 0..crate::MAX_FDS {
-                    let f = unsafe { &crate::PROCS[i].fds[fd] };
-                    if f.used && f.kind == crate::FD_PIPE_WRITE && f.pipe_id as usize == pipe_id {
-                        any_write = true;
-                        break;
-                    }
-                }
-                if any_write {
-                    break;
-                }
+        if !p.used {
+            return -9; // EBADF
+        }
+        if p.count == 0 {
+            if !unsafe { Self::pipe_has_writer(pipe_id) } {
+                return 0; // EOF: every write end is gone
             }
-            return if any_write { -11 } else { 0 }; // EAGAIN or EOF
+            // Empty but writers exist: sleep until data or EOF.
+            return unsafe { self.block_on_pipe(pipe_id, false) };
         }
         let n = len.min(p.count as u64) as usize;
-        // Copy n bytes from pipe buffer (circular).
         let mut copied = 0;
         while copied < n {
             let b = p.buf[p.head];
@@ -894,11 +942,14 @@ impl TrapSvc {
             p.count -= 1;
             copied += 1;
         }
+        // Freed space may unblock a writer.
+        unsafe { Self::wake_pipe(pipe_id, true) };
         copied as i64
     }
 
-    /// pipe_write(pipe_id, ptr, len): write bytes to a pipe buffer.
-    /// Returns bytes written or -11 if full.
+    /// pipe_write(pipe_id, ptr, len): write to a pipe buffer, blocking
+    /// while full. Partial writes allowed. Returns bytes written,
+    /// -32 (EPIPE) when no readers remain, -11 on wake (retry).
     fn sys_pipe_write(&mut self, pipe_id: usize, ptr: u64, len: u64) -> i64 {
         if pipe_id >= crate::MAX_PIPES {
             return -9; // EBADF
@@ -907,10 +958,14 @@ impl TrapSvc {
         if !p.used {
             return -9; // EBADF
         }
+        if !unsafe { Self::pipe_has_reader(pipe_id) } {
+            return -32; // EPIPE: nobody will ever read this
+        }
         let space = crate::PIPE_BUF_SIZE - p.count;
         let n = (len as usize).min(space);
         if n == 0 {
-            return -11; // EAGAIN (buffer full)
+            // Full: sleep until a reader drains space.
+            return unsafe { self.block_on_pipe(pipe_id, true) };
         }
         let mut copied = 0;
         while copied < n {
@@ -920,6 +975,8 @@ impl TrapSvc {
             p.count += 1;
             copied += 1;
         }
+        // New data may unblock a reader.
+        unsafe { Self::wake_pipe(pipe_id, false) };
         copied as i64
     }
 
@@ -932,14 +989,22 @@ impl TrapSvc {
                 None => return -28, // ENOSPC
             }
         };
-        // Allocate two fds.
+        // Allocate two fds. The read slot must be marked used before
+        // the second fd_alloc runs, or both calls return the same
+        // slot and the write end overwrites the read end.
         let read_slot = match unsafe { crate::fd_alloc() } {
             Some(s) => s,
             None => return -24, // EMFILE
         };
+        unsafe {
+            crate::fd_slot(read_slot).unwrap().used = true;
+        }
         let write_slot = match unsafe { crate::fd_alloc() } {
             Some(s) => s,
-            None => return -24,
+            None => {
+                unsafe { crate::fd_slot(read_slot).unwrap().used = false };
+                return -24;
+            }
         };
         unsafe {
             crate::PIPES[pipe_id].used = true;
@@ -1044,13 +1109,30 @@ impl TrapSvc {
     }
 
     fn sys_close(&mut self, fd: u64) -> i64 {
-        match unsafe { crate::fd_get(fd) } {
+        let pipe_id = match unsafe { crate::fd_get(fd) } {
             Some(f) => {
+                let pid = if f.kind == crate::FD_PIPE_READ || f.kind == crate::FD_PIPE_WRITE {
+                    Some(f.pipe_id as usize)
+                } else {
+                    None
+                };
                 f.used = false;
-                0
+                pid
             }
-            None => -9,
+            None => return -9,
+        };
+        // Closing a pipe end can unblock peers (EOF for readers when
+        // the last writer goes away, EPIPE for writers when readers
+        // are gone) — wake both directions; they re-check on retry.
+        if let Some(pid) = pipe_id {
+            if pid < crate::MAX_PIPES {
+                unsafe {
+                    Self::wake_pipe(pid, false);
+                    Self::wake_pipe(pid, true);
+                }
+            }
         }
+        0
     }
 }
 
@@ -1082,5 +1164,21 @@ impl TrapSvc {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), b_ptr as *mut u8, n);
         }
         n as i64
+    }
+}
+
+/// Wake processes blocked on `pipe_id` in one direction
+/// (`for_write` selects writers vs readers). Each woken proc's saved
+/// ctx.rax is set to EAGAIN so its syscall retry sees -11.
+pub(crate) unsafe fn wake_pipe_waiters(pipe_id: usize, for_write: bool) {
+    for i in 0..crate::NPROCS {
+        let p = &mut crate::PROCS[i];
+        if p.used && p.sleeping && p.wait_pipe == pipe_id as u64 + 1 && p.wait_pipe_wr == for_write
+        {
+            p.sleeping = false;
+            p.wait_pipe = 0;
+            p.wait_pipe_wr = false;
+            crate::CTX[i][crate::cx::RAX] = (-11i64) as u64; // EAGAIN
+        }
     }
 }

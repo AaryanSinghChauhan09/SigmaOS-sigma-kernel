@@ -430,7 +430,11 @@ pub struct ProcSlot {
     pub exited: bool,
     pub sleeping: bool, // Skipped by sched_tick until woken
     pub wait_pid: u64,  // Pid this proc is blocked waiting on (0 = none)
-    pub reaped: bool,   // Exit status already delivered to a waiter
+    /// Pipe this proc is blocked on (pipe_id + 1, 0 = none).
+    pub wait_pipe: u64,
+    /// True when blocked in pipe_write (false = pipe_read).
+    pub wait_pipe_wr: bool,
+    pub reaped: bool, // Exit status already delivered to a waiter
     pub pid: u64,
     pub parent: i64,
     pub exit_code: u64,
@@ -502,6 +506,8 @@ pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
     exited: false,
     sleeping: false,
     wait_pid: 0,
+    wait_pipe: 0,
+    wait_pipe_wr: false,
     reaped: false,
     pid: 0,
     parent: -1,
@@ -885,12 +891,13 @@ unsafe fn sys_spawn(
     // Children inherit a copy of the parent's fd table (fork-style).
     // File offsets are per-fd so copies diverge like dup(); pipe ends
     // share pipe_id so parent/child communicate on the same pipe.
-    let pfds = PROCS[CUR_PROC].fds;
-    // Optional stdout redirect: out_fd must name a writable file fd
-    // in the (inherited) parent table; 0 keeps the parent's setting.
+    let mut pfds = PROCS[CUR_PROC].fds;
+    // Optional stdout redirect: out_fd must name a writable fd
+    // (file or pipe write end) in the inherited parent table;
+    // 0 keeps the parent's setting.
     let stdout_fd = if out_fd >= 3 && out_fd <= 3 + MAX_FDS as u64 {
         let f = &PROCS[CUR_PROC].fds[(out_fd - 3) as usize];
-        if f.used && f.kind == FD_FILE && f.write {
+        if f.used && (f.kind == FD_FILE && f.write || f.kind == FD_PIPE_WRITE) {
             out_fd
         } else {
             PROCS[CUR_PROC].stdout_fd
@@ -913,7 +920,7 @@ unsafe fn sys_spawn(
     // stderr redirect: same validation as stdout_fd.
     let stderr_fd = if err_fd >= 3 && err_fd <= 3 + MAX_FDS as u64 {
         let f = &PROCS[CUR_PROC].fds[(err_fd - 3) as usize];
-        if f.used && f.kind == FD_FILE && f.write {
+        if f.used && (f.kind == FD_FILE && f.write || f.kind == FD_PIPE_WRITE) {
             err_fd
         } else {
             PROCS[CUR_PROC].stderr_fd
@@ -921,11 +928,26 @@ unsafe fn sys_spawn(
     } else {
         PROCS[CUR_PROC].stderr_fd
     };
+    // Pipe ends are pipeline plumbing: close-on-spawn for any end not
+    // referenced by a std redirect, so siblings don't hold
+    // EOF-blocking duplicates (the `a | b` fork/dup2 problem).
+    for i in 0..MAX_FDS {
+        let is_pipe =
+            pfds[i].used && (pfds[i].kind == FD_PIPE_READ || pfds[i].kind == FD_PIPE_WRITE);
+        if is_pipe {
+            let fdnum = i as u64 + 3;
+            if fdnum != stdout_fd && fdnum != stdin_fd && fdnum != stderr_fd {
+                pfds[i].used = false;
+            }
+        }
+    }
     PROCS[slot] = ProcSlot {
         used: true,
         exited: false,
         sleeping: false,
         wait_pid: 0,
+        wait_pipe: 0,
+        wait_pipe_wr: false,
         reaped: false,
         pid,
         parent: CUR_PROC as i64,
@@ -1001,6 +1023,8 @@ unsafe fn reap_process(idx: usize) {
         exited: false,
         sleeping: false,
         wait_pid: 0,
+        wait_pipe: 0,
+        wait_pipe_wr: false,
         reaped: false,
         pid: 0,
         parent: -1,
@@ -1081,6 +1105,13 @@ unsafe fn sys_exit(code: u64) -> i64 {
     let cur = CUR_PROC;
     PROCS[cur].exited = true;
     PROCS[cur].exit_code = code;
+    // The exiting proc's pipe ends are dead (writer/reader scans skip
+    // exited procs) — wake every pipe waiter so they re-check and see
+    // EOF/EPIPE. Cheap: NPROCS x MAX_PIPES is tiny.
+    for pid in 0..crate::MAX_PIPES {
+        arch::wake_pipe_waiters(pid, false);
+        arch::wake_pipe_waiters(pid, true);
+    }
     let parent = PROCS[cur].parent;
     if parent < 0 {
         arch::log("sigma-kernel: init exit\n");
@@ -1309,6 +1340,8 @@ fn run_init(
             exited: false,
             sleeping: false,
             wait_pid: 0,
+            wait_pipe: 0,
+            wait_pipe_wr: false,
             reaped: false,
             pid: 1,
             parent: -1,
