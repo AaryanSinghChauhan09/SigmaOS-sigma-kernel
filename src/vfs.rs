@@ -254,6 +254,84 @@ impl Vfs {
         self.lookup(path).is_some()
     }
 
+    /// Whether `path` resolves to a directory.
+    pub fn is_dir(&self, path: &str) -> bool {
+        self.lookup(path).is_some_and(|i| self.nodes[i].is_dir)
+    }
+
+    /// Size in bytes of the file at `path` (None if missing or a dir).
+    pub fn file_len(&self, path: &str) -> Option<u64> {
+        let idx = self.lookup(path)?;
+        let n = &self.nodes[idx];
+        (!n.is_dir).then_some(n.data.len() as u64)
+    }
+
+    /// Create an empty file at `path`. Parent directories must already
+    /// exist. Errors if the path exists or a parent is missing/not a dir.
+    pub fn create_file(&mut self, path: &str) -> Result<(), KernelError> {
+        let trimmed = path.trim_matches('/');
+        if trimmed.is_empty() {
+            return Err(KernelError::Fs("invalid path"));
+        }
+        let mut cur = self.root;
+        let parts: Vec<&str> = trimmed.split('/').collect();
+        for (i, part) in parts.iter().enumerate() {
+            let last = i == parts.len() - 1;
+            match self.nodes[cur].children.get(*part) {
+                Some(&next) => {
+                    if last {
+                        return Err(KernelError::Fs("file exists"));
+                    }
+                    if !self.nodes[next].is_dir {
+                        return Err(KernelError::Fs("not a directory"));
+                    }
+                    cur = next;
+                }
+                None => {
+                    if last {
+                        let idx = self.nodes.len();
+                        self.nodes.push(VfsNode {
+                            name: (*part).to_string(),
+                            is_dir: false,
+                            data: Vec::new(),
+                            children: BTreeMap::new(),
+                        });
+                        self.nodes[cur].children.insert((*part).to_string(), idx);
+                        return Ok(());
+                    }
+                    return Err(KernelError::Fs("no such directory"));
+                }
+            }
+        }
+        Err(KernelError::Fs("invalid path"))
+    }
+
+    /// Empty the file at `path`.
+    pub fn truncate(&mut self, path: &str) -> Result<(), KernelError> {
+        let idx = self.lookup(path).ok_or(KernelError::Fs("no such file"))?;
+        if self.nodes[idx].is_dir {
+            return Err(KernelError::Fs("is a directory"));
+        }
+        self.nodes[idx].data.clear();
+        Ok(())
+    }
+
+    /// Write `data` at byte offset `off` in the file at `path`, growing
+    /// the file as needed. Sparse gaps are zero-filled. Returns the
+    /// number of bytes written.
+    pub fn write_at(&mut self, path: &str, data: &[u8], off: u64) -> Result<usize, KernelError> {
+        let idx = self.lookup(path).ok_or(KernelError::Fs("no such file"))?;
+        if self.nodes[idx].is_dir {
+            return Err(KernelError::Fs("is a directory"));
+        }
+        let end = off as usize + data.len();
+        if self.nodes[idx].data.len() < end {
+            self.nodes[idx].data.resize(end, 0);
+        }
+        self.nodes[idx].data[off as usize..end].copy_from_slice(data);
+        Ok(data.len())
+    }
+
     /// Number of nodes in the VFS.
     pub fn len(&self) -> usize {
         self.nodes.len()
@@ -346,5 +424,42 @@ mod tests {
         let vfs = Vfs::new();
         assert!(vfs.read("/nope").is_none());
         assert!(!vfs.exists("/nope"));
+    }
+
+    #[test]
+    fn write_at_creates_and_updates_file() {
+        let mut vfs = Vfs::new();
+        vfs.create_file("/tmp/x").unwrap_err(); // /tmp missing
+        vfs.create_file("/log").unwrap();
+        assert_eq!(vfs.file_len("/log"), Some(0));
+        vfs.write_at("/log", b"hello", 0).unwrap();
+        assert_eq!(vfs.read("/log"), Some(&b"hello"[..]));
+        vfs.write_at("/log", b"!", 5).unwrap();
+        assert_eq!(vfs.read("/log"), Some(&b"hello!"[..]));
+        // sparse write zero-fills the gap
+        vfs.write_at("/log", b"Z", 8).unwrap();
+        assert_eq!(vfs.read("/log"), Some(&b"hello!\0\0Z"[..]));
+    }
+
+    #[test]
+    fn create_file_rejects_existing_and_dir() {
+        let archive = cpio_newc_write(&[("/a/b", b"data")]);
+        let mut vfs = Vfs::new();
+        vfs.load_cpio_newc(&archive).unwrap();
+        assert!(vfs.create_file("/a/b").is_err()); // exists
+        assert!(vfs.create_file("/a").is_err()); // is a dir path -> exists anyway
+        vfs.create_file("/a/c").unwrap();
+        assert_eq!(vfs.file_len("/a/c"), Some(0));
+        assert!(vfs.write_at("/a", b"x", 0).is_err()); // is a dir
+    }
+
+    #[test]
+    fn truncate_empties_file() {
+        let mut vfs = Vfs::new();
+        vfs.create_file("/f").unwrap();
+        vfs.write_at("/f", b"data", 0).unwrap();
+        vfs.truncate("/f").unwrap();
+        assert_eq!(vfs.file_len("/f"), Some(0));
+        assert_eq!(vfs.read("/f"), Some(&b""[..]));
     }
 }

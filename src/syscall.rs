@@ -192,11 +192,9 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
     }
     match nr {
         nr::WRITE => {
-            let (fd, ptr, len) = (args[0], args[1], args[2]);
-            if fd != 1 && fd != 2 {
-                return EBADF;
-            }
-            svc.write(fd, ptr, len)
+            // fd 1/2 = console, fd>=3 = pipe or file — the service
+            // layer validates and returns EBADF for bad fds.
+            svc.write(args[0], args[1], args[2])
         }
         nr::EXIT => svc.exit(args[0]),
         nr::OPEN => svc.open(args[0], args[1], args[2]),
@@ -261,13 +259,16 @@ mod dispatch_tests {
     }
 
     #[test]
-    fn write_bad_fd() {
+    fn write_forwards_file_fds_to_service() {
+        // fd>=3 (pipes/files) must reach the service layer — fd
+        // validation happens there, not in dispatch.
         let mut m = Mock {
             written: Vec::new(),
             pid: 1,
         };
         let args = [9u64, 0x1000, 5, 0, 0, 0];
-        assert_eq!(dispatch(nr::WRITE, &args, &mut m), EBADF);
+        assert_eq!(dispatch(nr::WRITE, &args, &mut m), 5);
+        assert_eq!(m.written, vec![(9, 0x1000, 5)]);
     }
 
     #[test]

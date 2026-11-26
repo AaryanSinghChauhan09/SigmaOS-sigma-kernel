@@ -375,6 +375,13 @@ pub unsafe fn sys_vfs() -> &'static kernel::vfs::Vfs {
     unsafe { VFS.as_ref().unwrap() }
 }
 
+/// Mutably borrow the mounted VFS. Only call from syscall context,
+/// which runs with interrupts disabled.
+#[allow(static_mut_refs)]
+pub unsafe fn sys_vfs_mut() -> &'static mut kernel::vfs::Vfs {
+    unsafe { VFS.as_mut().unwrap() }
+}
+
 /* ---- ring-3 user entry + process table ---- */
 
 extern "C" {
@@ -470,6 +477,8 @@ pub struct FdEnt {
     pub used: bool,
     pub kind: u8,
     pub pipe_id: u8,
+    /// Opened for writing (FD_FILE only).
+    pub write: bool,
     pub path: [u8; 64],
     pub len: u32,
     pub off: u64,
@@ -493,6 +502,7 @@ pub static mut PROCS: [ProcSlot; NPROCS] = [ProcSlot {
         used: false,
         kind: FD_FILE,
         pipe_id: 0,
+        write: false,
         path: [0; 64],
         len: 0,
         off: 0,
@@ -535,6 +545,12 @@ unsafe fn fd_get(fd: u64) -> Option<&'static mut FdEnt> {
     } else {
         None
     }
+}
+
+/// Borrow an fd-table slot by index without the `used` check — only
+/// for initializing a slot just returned by `fd_alloc`.
+unsafe fn fd_slot(i: usize) -> Option<&'static mut FdEnt> {
+    (i < MAX_FDS).then(|| &mut current_fds()[i])
 }
 
 /// Find the next runnable process (not exited, not sleeping) starting
@@ -684,20 +700,21 @@ unsafe fn read_spawn_args(
     if n > 15 {
         return Err(-22);
     }
-    let mut read_descs = |base: u64, count: usize| -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, i64> {
-        let mut out = alloc::vec::Vec::with_capacity(count);
-        for i in 0..count {
-            let d = base + (i * 16) as u64;
-            let (p, l) = unsafe { (*(d as *const u64), *((d + 8) as *const u64)) };
-            if l > 1024 {
-                return Err(-22);
+    let mut read_descs =
+        |base: u64, count: usize| -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, i64> {
+            let mut out = alloc::vec::Vec::with_capacity(count);
+            for i in 0..count {
+                let d = base + (i * 16) as u64;
+                let (p, l) = unsafe { (*(d as *const u64), *((d + 8) as *const u64)) };
+                if l > 1024 {
+                    return Err(-22);
+                }
+                // SAFETY: p/l describe a parent user buffer.
+                let bytes = unsafe { core::slice::from_raw_parts(p as *const u8, l as usize) };
+                out.push(bytes.to_vec());
             }
-            // SAFETY: p/l describe a parent user buffer.
-            let bytes = unsafe { core::slice::from_raw_parts(p as *const u8, l as usize) };
-            out.push(bytes.to_vec());
-        }
-        Ok(out)
-    };
+            Ok(out)
+        };
     let args = read_descs(args_ptr + 8, n)?;
     // envc follows the argc descriptors
     let envc = unsafe { *((args_ptr + 8 + (n * 16) as u64) as *const u64) } as usize;
@@ -821,6 +838,7 @@ unsafe fn sys_spawn(p_ptr: u64, p_len: u64, args_ptr: u64) -> i64 {
             used: false,
             kind: FD_FILE,
             pipe_id: 0,
+            write: false,
             path: [0; 64],
             len: 0,
             off: 0,
@@ -899,6 +917,7 @@ unsafe fn reap_process(idx: usize) {
             used: false,
             kind: FD_FILE,
             pipe_id: 0,
+            write: false,
             path: [0; 64],
             len: 0,
             off: 0,
@@ -1201,6 +1220,7 @@ fn run_init(
                 used: false,
                 kind: FD_FILE,
                 pipe_id: 0,
+                write: false,
                 path: [0; 64],
                 len: 0,
                 off: 0,

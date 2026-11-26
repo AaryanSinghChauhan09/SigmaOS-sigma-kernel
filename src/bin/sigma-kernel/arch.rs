@@ -135,7 +135,11 @@ pub struct IdentityPhysMem;
 impl kernel::usermem::PhysMem for IdentityPhysMem {
     fn write_u64(&mut self, phys: u64, val: u64) {
         if phys >= 0x4000_0000 {
-            log(&alloc::format!("physmem: bad write phys={:#x} val={:#x}\n", phys, val));
+            log(&alloc::format!(
+                "physmem: bad write phys={:#x} val={:#x}\n",
+                phys,
+                val
+            ));
             return;
         }
         // SAFETY: low-1GiB identity map covers all frame addresses we
@@ -230,10 +234,13 @@ pub struct TrapSvc;
 impl kernel::syscall::KernelServices for TrapSvc {
     fn write(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
         if fd != 1 && fd != 2 {
-            // Check if it's a pipe write fd.
+            // Check if it's a pipe write fd or a writable file fd.
             if let Some(f) = unsafe { crate::fd_get(fd) } {
                 if f.kind == crate::FD_PIPE_WRITE {
                     return self.sys_pipe_write(f.pipe_id as usize, ptr, len);
+                }
+                if f.kind == crate::FD_FILE && f.write {
+                    return self.sys_file_write(fd, ptr, len);
                 }
             }
             return -9; // EBADF
@@ -548,10 +555,16 @@ pub fn serial_read_byte() -> Option<u8> {
 
 impl TrapSvc {
     /// open(path_ptr,path_len,flags): copy path, check VFS, alloc fd.
-    fn sys_open(&mut self, path_ptr: u64, path_len: u64, _flags: u64) -> i64 {
+    fn sys_open(&mut self, path_ptr: u64, path_len: u64, flags: u64) -> i64 {
         if path_len == 0 || path_len > 64 {
             return -22; // EINVAL
         }
+        // Linux open(2) flag bits we honor.
+        const O_ACCMODE: u64 = 3;
+        const O_CREAT: u64 = 0x40;
+        const O_TRUNC: u64 = 0x200;
+        const O_APPEND: u64 = 0x400;
+        let write = flags & O_ACCMODE != 0;
         // SAFETY: user path buffer is mapped under active CR3.
         let bytes =
             unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
@@ -561,8 +574,28 @@ impl TrapSvc {
         };
         let exists = unsafe { crate::sys_vfs() }.exists(path);
         if !exists {
-            return -2; // ENOENT
+            if flags & O_CREAT == 0 {
+                return -2; // ENOENT
+            }
+            // SAFETY: syscall context, interrupts disabled.
+            if unsafe { crate::sys_vfs_mut() }.create_file(path).is_err() {
+                return -5; // EIO (missing parents, etc.)
+            }
         }
+        if unsafe { crate::sys_vfs() }.is_dir(path) {
+            return -21; // EISDIR
+        }
+        if write && flags & O_TRUNC != 0 {
+            // SAFETY: syscall context, interrupts disabled.
+            if unsafe { crate::sys_vfs_mut() }.truncate(path).is_err() {
+                return -5;
+            }
+        }
+        let append_off = if write && flags & O_APPEND != 0 {
+            unsafe { crate::sys_vfs() }.file_len(path).unwrap_or(0)
+        } else {
+            0
+        };
         // Use per-process fd allocation.
         let slot = match unsafe { crate::fd_alloc() } {
             Some(s) => s,
@@ -570,15 +603,46 @@ impl TrapSvc {
         };
         // SAFETY: slot just allocated, single-threaded.
         unsafe {
-            let f = crate::fd_get((slot as u64) + 3).unwrap();
+            let f = crate::fd_slot(slot).unwrap();
             f.used = true;
             f.kind = crate::FD_FILE;
             f.pipe_id = 0;
+            f.write = write;
             f.len = path_len as u32;
-            f.off = 0;
+            f.off = append_off;
             f.path[..path_len as usize].copy_from_slice(bytes);
         }
         (slot as i64) + 3
+    }
+
+    /// write to an FD_FILE opened for writing: copy user bytes into the
+    /// VFS file at the fd's current offset.
+    fn sys_file_write(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
+        let (pbuf, plen, off) = {
+            let Some(f) = (unsafe { crate::fd_get(fd) }) else {
+                return -9; // EBADF
+            };
+            if f.kind != crate::FD_FILE || !f.write {
+                return -9;
+            }
+            let mut b = [0u8; 64];
+            b[..f.len as usize].copy_from_slice(&f.path[..f.len as usize]);
+            (b, f.len as usize, f.off)
+        };
+        let path = match core::str::from_utf8(&pbuf[..plen]) {
+            Ok(s) => s,
+            Err(_) => return -14,
+        };
+        // SAFETY: user buf mapped under active CR3.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        let n = match unsafe { crate::sys_vfs_mut() }.write_at(path, bytes, off) {
+            Ok(n) => n,
+            Err(_) => return -5, // EIO
+        };
+        if let Some(f) = unsafe { crate::fd_get(fd) } {
+            f.off += n as u64;
+        }
+        n as i64
     }
 
     /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file or pipe.
@@ -709,17 +773,19 @@ impl TrapSvc {
             crate::PIPES[pipe_id].tail = 0;
             crate::PIPES[pipe_id].count = 0;
 
-            let rf = crate::fd_get((read_slot as u64) + 3).unwrap();
+            let rf = crate::fd_slot(read_slot).unwrap();
             rf.used = true;
             rf.kind = crate::FD_PIPE_READ;
             rf.pipe_id = pipe_id as u8;
+            rf.write = false;
             rf.len = 0;
             rf.off = 0;
 
-            let wf = crate::fd_get((write_slot as u64) + 3).unwrap();
+            let wf = crate::fd_slot(write_slot).unwrap();
             wf.used = true;
             wf.kind = crate::FD_PIPE_WRITE;
             wf.pipe_id = pipe_id as u8;
+            wf.write = false;
             wf.len = 0;
             wf.off = 0;
         }

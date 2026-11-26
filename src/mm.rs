@@ -108,9 +108,7 @@ impl FrameAllocator {
                 continue;
             }
             let extends = match run_start {
-                Some(s) => {
-                    self.frame_to_phys(idx) == self.frame_to_phys(s) + run * FRAME_SIZE
-                }
+                Some(s) => self.frame_to_phys(idx) == self.frame_to_phys(s) + run * FRAME_SIZE,
                 None => false,
             };
             if run_start.is_none() || !extends {
