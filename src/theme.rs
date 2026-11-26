@@ -173,10 +173,7 @@ pub struct ThemeRegistry {
 impl ThemeRegistry {
     /// Create a new theme registry with built-in themes.
     pub fn new() -> Self {
-        let mut themes = alloc::vec::Vec::new();
-        themes.push(Theme::new("sigma-default"));
-        themes.push(Theme::dark());
-        themes.push(Theme::light());
+        let themes = alloc::vec![Theme::new("sigma-default"), Theme::dark(), Theme::light(),];
         Self { themes }
     }
 
@@ -193,5 +190,11 @@ impl ThemeRegistry {
     /// List all theme names.
     pub fn list(&self) -> alloc::vec::Vec<&str> {
         self.themes.iter().map(|t| t.name.as_str()).collect()
+    }
+}
+
+impl Default for ThemeRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }

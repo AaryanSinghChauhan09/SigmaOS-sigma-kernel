@@ -2,7 +2,6 @@
 //!
 //! ISO image generation and disk installation configuration.
 
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -150,12 +149,12 @@ impl IsoConfig {
 
         // Simulated build process
         let build_steps = vec![
-            alloc::format!("Creating directory structure"),
+            "Creating directory structure".to_string(),
             alloc::format!("Copying kernel from {}", self.kernel_path),
             alloc::format!("Copying initramfs from {}", self.initramfs_path),
             alloc::format!("Generating {}", self.bootloader.config_path),
-            alloc::format!("Creating ISO 9660 filesystem"),
-            alloc::format!("Adding multi-boot headers"),
+            "Creating ISO 9660 filesystem".to_string(),
+            "Adding multi-boot headers".to_string(),
             alloc::format!("Writing ISO to {}", self.output_path),
         ];
 
@@ -195,12 +194,12 @@ impl IsoConfig {
                 "Formatting partitions with {:?}",
                 self.disk_config.filesystem
             ),
-            alloc::format!("Mounting filesystems"),
-            alloc::format!("Extracting system files"),
-            alloc::format!("Installing bootloader"),
-            alloc::format!("Generating fstab"),
-            alloc::format!("Configuring network"),
-            alloc::format!("Installation complete"),
+            "Mounting filesystems".to_string(),
+            "Extracting system files".to_string(),
+            "Installing bootloader".to_string(),
+            "Generating fstab".to_string(),
+            "Configuring network".to_string(),
+            "Installation complete".to_string(),
         ];
 
         for step in install_steps {

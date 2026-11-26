@@ -258,13 +258,23 @@ impl Vfs {
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
+
+    /// Whether the VFS has no nodes.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+}
+
+impl Default for Vfs {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Build a minimal cpio newc archive in memory (for tests/tools).
 pub fn cpio_newc_write(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut ino = 1u32;
-    for (name, data) in entries {
+    for (ino, &(name, data)) in (1u32..).zip(entries.iter()) {
         let namesize = name.len() + 1;
         let header = [
             format!("{:08x}", ino),
@@ -293,7 +303,6 @@ pub fn cpio_newc_write(entries: &[(&str, &[u8])]) -> Vec<u8> {
         while out.len() % 4 != 0 {
             out.push(0);
         }
-        ino += 1;
     }
     // trailer
     let trailer = [

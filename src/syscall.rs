@@ -216,15 +216,6 @@ pub fn dispatch<S: KernelServices>(nr: u64, args: &[u64; 6], svc: &mut S) -> i64
         nr::KILL => svc.kill(args[0], args[1]),
         nr::MOUNT => svc.mount(args[0], args[1], args[2], args[3], args[4], args[5]),
         nr::UMOUNT => svc.umount(args[0], args[1]),
-        nr::KERNEL_INFO => {
-            // return (ptr,len) packed: caller reads version via ptr
-            let v = svc.kernel_version();
-            // encode as two returns is not possible; return len and
-            // stash ptr in a static — kept simple: return ptr, len
-            // is fixed KERNEL_VERSION_LEN via a second call. For now
-            // return pointer as i64.
-            v.as_ptr() as i64
-        }
         _ => ENOSYS,
     }
 }

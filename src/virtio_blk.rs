@@ -135,7 +135,7 @@ impl<T: BlkTransport> BlockDevice<T> {
     pub fn read_sectors(&mut self, sector: u64, n: u64) -> Result<Vec<u8>, KernelError> {
         if sector
             .checked_add(n)
-            .map_or(true, |e| e > self.config.capacity_sectors)
+            .is_none_or(|e| e > self.config.capacity_sectors)
         {
             return Err(KernelError::InvalidArg("read past end"));
         }

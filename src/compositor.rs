@@ -345,6 +345,11 @@ impl Compositor {
         self.windows.len()
     }
 
+    /// Whether there are no windows.
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty()
+    }
+
     /// Iterate windows bottom→top.
     pub fn iter(&self) -> impl Iterator<Item = &Window> {
         self.windows.iter()

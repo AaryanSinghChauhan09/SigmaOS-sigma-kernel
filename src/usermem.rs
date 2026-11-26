@@ -87,7 +87,7 @@ fn ensure_pd(
     alloc: &mut FrameAllocator,
     phys_mem: &mut dyn PhysMem,
 ) -> Result<u64, KernelError> {
-    let (pi, di, mi, _) = indices(vaddr);
+    let (pi, di, _mi, _) = indices(vaddr);
 
     // PML4[pi] -> PDPT
     let mut pdpt = get_entry(phys_mem, pml4, pi);

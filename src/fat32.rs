@@ -75,8 +75,10 @@ impl Fat32BootSector {
 /// FAT32 filesystem mounted on a block device.
 pub struct Fat32Fs {
     boot: Fat32BootSector,
+    #[allow(dead_code)]
     fat_start_sector: u32,
     data_start_sector: u32,
+    #[allow(dead_code)]
     root_cluster: u32,
 }
 
@@ -194,7 +196,7 @@ mod tests {
         data[0x42] = 0x28; // FAT32 signature
         data[510] = 0x55;
         data[511] = 0xAA;
-        data[11] = 0x02; // bytes per sector = 512
+        data[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes per sector
         data[13] = 0x08; // sectors per cluster = 8
         let boot = Fat32BootSector::parse(&data).unwrap();
         assert_eq!(boot.bytes_per_sector, 512);

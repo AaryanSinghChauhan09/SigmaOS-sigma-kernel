@@ -192,8 +192,7 @@ impl NetCodec {
         let header = if self.modern {
             NetHeader::decode_modern(&buf[..n])?
         } else {
-            let m = NetHeader::decode_modern(&[buf[..10].to_vec(), vec![0, 0]].concat())?;
-            m
+            NetHeader::decode_modern(&[buf[..10].to_vec(), vec![0, 0]].concat())?
         };
         Ok((header, &buf[n..]))
     }

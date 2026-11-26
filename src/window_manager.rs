@@ -107,7 +107,7 @@ impl WindowManager {
                     }
                     c
                 };
-                let rows = (count as u32 + cols - 1) / cols;
+                let rows = (count as u32).div_ceil(cols);
                 let col_width = screen.w / cols;
                 let row_height = screen.h / rows;
 

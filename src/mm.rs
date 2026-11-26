@@ -36,7 +36,7 @@ impl FrameAllocator {
             if r.mem_type != 1 || r.len == 0 {
                 continue;
             }
-            let start = (r.start + FRAME_SIZE - 1) / FRAME_SIZE * FRAME_SIZE;
+            let start = r.start.div_ceil(FRAME_SIZE) * FRAME_SIZE;
             let end = (r.start + r.len) / FRAME_SIZE * FRAME_SIZE;
             if end <= start {
                 continue;
@@ -51,7 +51,7 @@ impl FrameAllocator {
         if total == 0 {
             return Err(KernelError::OutOfMemory);
         }
-        let words = ((total + 63) / 64) as usize;
+        let words = total.div_ceil(64) as usize;
         // all bits set = free; trailing bits beyond total are cleared
         let mut bitmap = alloc::vec![u64::MAX; words];
         let rem = total % 64;

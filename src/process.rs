@@ -8,7 +8,7 @@
 //! `fs/binfmt_elf.c` `load_elf_binary` and the rust-vmm
 //! `vm-memory` GuestMemory model.
 
-use crate::elf::{image_span, load_segments, parse_header, ElfHeader, LoadSegment, ET_DYN};
+use crate::elf::{image_span, load_segments, parse_header, LoadSegment, ET_DYN};
 use crate::error::KernelError;
 use crate::mm::{FrameAllocator, FRAME_SIZE};
 use alloc::vec::Vec;

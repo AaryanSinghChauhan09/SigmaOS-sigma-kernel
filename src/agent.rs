@@ -136,6 +136,12 @@ impl AgentManager {
     }
 }
 
+impl Default for AgentManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Plugin descriptor.
 #[derive(Debug, Clone)]
 pub struct Plugin {
@@ -214,5 +220,11 @@ impl PluginManager {
     /// List loaded plugins.
     pub fn list_loaded(&self) -> Vec<&Plugin> {
         self.plugins.iter().filter(|p| p.loaded).collect()
+    }
+}
+
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

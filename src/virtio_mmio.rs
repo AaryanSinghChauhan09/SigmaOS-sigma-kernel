@@ -31,8 +31,8 @@ impl VirtioBlk {
         mmio.write32(mmio::QUEUE_READY, 1);
         let mut cfg_data = [0u8; 8];
         let cfg_offset = 0x100u32;
-        for i in 0..8 {
-            cfg_data[i] = mmio.read32(cfg_offset + i as u32 * 4) as u8;
+        for (i, byte) in cfg_data.iter_mut().enumerate() {
+            *byte = mmio.read32(cfg_offset + i as u32 * 4) as u8;
         }
         let _config = BlkConfig::parse_capacity(&cfg_data)?;
         Ok(Self {

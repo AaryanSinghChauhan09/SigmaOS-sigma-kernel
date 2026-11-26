@@ -51,6 +51,10 @@ pub trait ScreenBuf {
     fn get(&self, index: usize) -> u16;
     /// Total cells (normally CELLS).
     fn len(&self) -> usize;
+    /// Whether the buffer has no cells.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// In-memory screen for tests.
@@ -69,6 +73,12 @@ impl VecScreen {
     pub fn cell(&self, index: usize) -> (u8, u8) {
         let c = self.cells[index];
         (c as u8, (c >> 8) as u8)
+    }
+}
+
+impl Default for VecScreen {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
