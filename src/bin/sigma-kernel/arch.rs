@@ -515,16 +515,14 @@ fn kbd() -> &'static mut kernel::ps2::Keyboard<Ps2Hw> {
     // SAFETY: single-threaded syscall context; lazy init once.
     unsafe {
         if KBD.is_none() {
-            KBD = Some(kernel::ps2::Keyboard::new(Ps2Hw));
+            KBD = Some(kernel::ps2::Keyboard::attached(Ps2Hw));
         }
         KBD.as_mut().unwrap()
     }
 }
 
 /// Read one key as a byte (Char->ascii, Enter->'\n', Backspace->0x7f).
-/// None if no key pending. Currently unused: the i8042 init sequence
-/// in `Keyboard::new` wedges under QEMU, so fd0 reads serial RX only.
-#[allow(dead_code)]
+/// None if no key pending.
 fn kbd_read_byte() -> Option<u8> {
     let k = kbd();
     k.poll();
@@ -586,9 +584,8 @@ impl TrapSvc {
     /// read(fd,ptr,len): fd0=serial, fd>=3=VFS file or pipe.
     fn sys_read(&mut self, fd: u64, ptr: u64, len: u64) -> i64 {
         if fd == 0 {
-            // console input: serial RX (PS/2 path disabled — i8042
-            // init hangs under QEMU; revisit for bare metal)
-            let byte = serial_read_byte();
+            // console input: PS/2 keyboard, then serial RX
+            let byte = kbd_read_byte().or_else(serial_read_byte);
             return match byte {
                 Some(b) => {
                     // SAFETY: user buf mapped.

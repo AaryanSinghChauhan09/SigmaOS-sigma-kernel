@@ -86,6 +86,20 @@ impl<P: Ps2Port> Keyboard<P> {
         }
     }
 
+    /// Attach without touching the controller — for environments where
+    /// the i8042 is already initialized (QEMU defaults: keyboard
+    /// enabled, scancode set 1).
+    pub fn attached(port: P) -> Self {
+        Self {
+            port,
+            shift: false,
+            caps: false,
+            ctrl: false,
+            alt: false,
+            events: alloc::vec::Vec::new(),
+        }
+    }
+
     /// Poll the controller status; if a scancode is waiting, decode it
     /// and push any resulting `Key` events.
     pub fn poll(&mut self) {
