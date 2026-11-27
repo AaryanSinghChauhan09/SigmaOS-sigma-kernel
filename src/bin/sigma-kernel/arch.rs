@@ -1207,10 +1207,13 @@ impl TrapSvc {
         newfd as i64
     }
 
-    /// kill(pid, signal): send signal to process.
+    /// kill(pid, signal): send signal to process. All supported
+    /// signals are fatal-by-default (no user handlers yet), so
+    /// delivery marks the process exited with status 128+sig —
+    /// the shell convention for signal termination.
     fn sys_kill(&mut self, pid: u64, signal: u64) -> i64 {
-        const SIGKILL: u64 = 9;
-        const SIGTERM: u64 = 15;
+        // Fatal-by-default signals (POSIX numbers).
+        const FATAL: &[u64] = &[1, 2, 3, 6, 9, 10, 12, 14, 15];
 
         if pid == 0 {
             return -22; // EINVAL - can't kill self/group
@@ -1219,19 +1222,12 @@ impl TrapSvc {
         unsafe {
             for i in 0..crate::NPROCS {
                 if crate::PROCS[i].used && crate::PROCS[i].pid == pid {
-                    match signal {
-                        SIGKILL => {
-                            crate::PROCS[i].exited = true;
-                            crate::PROCS[i].exit_code = 137; // 128 + 9
-                            return 0;
-                        }
-                        SIGTERM => {
-                            crate::PROCS[i].exited = true;
-                            crate::PROCS[i].exit_code = 143; // 128 + 15
-                            return 0;
-                        }
-                        _ => return -22, // EINVAL - unsupported signal
+                    if FATAL.contains(&signal) {
+                        crate::PROCS[i].exited = true;
+                        crate::PROCS[i].exit_code = 128 + signal;
+                        return 0;
                     }
+                    return -22; // EINVAL - unsupported signal
                 }
             }
         }
