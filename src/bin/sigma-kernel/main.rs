@@ -646,6 +646,7 @@ pub extern "C" fn syscall_trap() -> i64 {
             nr::EXIT => sys_exit(args[0]),
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
             nr::PROCINFO => sys_procinfo(args[0], args[1]),
+            nr::DMESG => sys_dmesg(args[0], args[1]),
             _ => {
                 let mut svc = arch::TrapSvc;
                 kernel::syscall::dispatch(nr, &args, &mut svc)
@@ -1327,6 +1328,17 @@ unsafe fn sys_meminfo(ptr: u64, len: u64) -> i64 {
         *((ptr + 8) as *mut u64) = free;
     }
     0
+}
+
+/// DMESG(ptr, len): copy the most recent kernel log bytes into the
+/// user buffer; returns the count written (Linux `syslog`/dmesg read).
+unsafe fn sys_dmesg(ptr: u64, len: u64) -> i64 {
+    if ptr == 0 || len == 0 {
+        return -22;
+    }
+    // SAFETY: caller validated ptr/len; user buf mapped under active CR3.
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, len as usize) };
+    arch::log_read(buf) as i64
 }
 
 /// PROCINFO(ptr, len): write NPROCS records of {pid, flags, exit_code}

@@ -39,10 +39,43 @@ fn putc(c: u8) {
     outb(COM1, c);
 }
 
-/// Log a string to the serial console.
+/// Kernel log ring buffer (dmesg backing store). Circular: once full,
+/// new bytes overwrite the oldest. `LOG_POS` counts total bytes ever
+/// written so readers can extract the most recent `len` in order.
+static mut LOG_BUF: [u8; 16384] = [0; 16384];
+static mut LOG_POS: usize = 0;
+
+/// Log a string to the serial console and the ring buffer.
 pub fn log(s: &str) {
+    // SAFETY: single-CPU kernel; log() is only called from trap/syscall
+    // context, never concurrently.
+    unsafe {
+        for &b in s.as_bytes() {
+            LOG_BUF[LOG_POS % LOG_BUF.len()] = b;
+            LOG_POS = LOG_POS.wrapping_add(1);
+        }
+    }
     for &b in s.as_bytes() {
         putc(b);
+    }
+}
+
+/// Copy up to `buf.len()` of the most recent kernel log bytes into
+/// `buf`, returning the count written. The tail of the ring is the
+/// newest data.
+pub fn log_read(buf: &mut [u8]) -> usize {
+    // SAFETY: single-CPU kernel, same reasoning as log().
+    unsafe {
+        let pos = LOG_POS;
+        let n = pos.min(buf.len()).min(LOG_BUF.len());
+        if n == 0 {
+            return 0;
+        }
+        let start = pos - n;
+        for i in 0..n {
+            buf[i] = LOG_BUF[(start + i) % LOG_BUF.len()];
+        }
+        n
     }
 }
 
