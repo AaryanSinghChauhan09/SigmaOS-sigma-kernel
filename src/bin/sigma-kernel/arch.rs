@@ -233,12 +233,8 @@ impl kernel::syscall::KernelServices for KernelSvc {
         kernel::KERNEL_VERSION
     }
     fn fork(&mut self) -> i64 {
-        // Simplified fork: return ENOSYS for now
-        // Full implementation requires:
-        // 1. Copy current process's page tables (COW if possible)
-        // 2. Allocate new process slot
-        // 3. Copy register state
-        // 4. Return child pid in parent, 0 in child
+        // FORK is handled in syscall_trap (sys_fork in main.rs)
+        // before dispatch reaches this svc — defensive ENOSYS.
         -38 // ENOSYS
     }
     fn exec(
@@ -250,12 +246,8 @@ impl kernel::syscall::KernelServices for KernelSvc {
         _envp_ptr: u64,
         _envp_len: u64,
     ) -> i64 {
-        // Simplified exec: return ENOSYS for now
-        // Full implementation requires:
-        // 1. Load ELF from path
-        // 2. Replace current address space
-        // 3. Set up new stack and argv/envp
-        // 4. Jump to new entry point
+        // EXEC is handled in syscall_trap (sys_exec in main.rs)
+        // before dispatch reaches this svc — defensive ENOSYS.
         -38 // ENOSYS
     }
 }
@@ -349,12 +341,8 @@ impl kernel::syscall::KernelServices for TrapSvc {
         n as i64
     }
     fn fork(&mut self) -> i64 {
-        // Simplified fork: return ENOSYS for now
-        // Full implementation requires:
-        // 1. Copy current process's page tables (COW if possible)
-        // 2. Allocate new process slot
-        // 3. Copy register state
-        // 4. Return child pid in parent, 0 in child
+        // FORK is handled in syscall_trap (sys_fork in main.rs)
+        // before dispatch reaches this svc — defensive ENOSYS.
         -38 // ENOSYS
     }
     fn exec(
@@ -366,12 +354,8 @@ impl kernel::syscall::KernelServices for TrapSvc {
         _envp_ptr: u64,
         _envp_len: u64,
     ) -> i64 {
-        // Simplified exec: return ENOSYS for now
-        // Full implementation requires:
-        // 1. Load ELF from path
-        // 2. Replace current address space
-        // 3. Set up new stack and argv/envp
-        // 4. Jump to new entry point
+        // EXEC is handled in syscall_trap (sys_exec in main.rs)
+        // before dispatch reaches this svc — defensive ENOSYS.
         -38 // ENOSYS
     }
     fn pipe(&mut self) -> i64 {
