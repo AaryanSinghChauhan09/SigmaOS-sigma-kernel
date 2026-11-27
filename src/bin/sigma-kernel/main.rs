@@ -640,6 +640,7 @@ pub extern "C" fn syscall_trap() -> i64 {
         use kernel::syscall::nr;
         match nr {
             nr::SPAWN => sys_spawn(args[0], args[1], args[2], args[3], args[4], args[5]),
+            nr::FORK => sys_fork(),
             nr::WAIT => sys_wait(args[0]),
             nr::EXIT => sys_exit(args[0]),
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
@@ -966,6 +967,106 @@ unsafe fn sys_spawn(
         fds: pfds,
     };
     switch_to(slot);
+    pid as i64
+}
+
+/// FORK: duplicate the current process — copy every present user
+/// page into fresh frames, build a private page-table set, and clone
+/// the saved ctx (child resumes with rax=0, parent gets the pid).
+/// Linux `do_fork` + `copy_mm` analogue. The child is picked up by
+/// the timer scheduler; no immediate switch.
+unsafe fn sys_fork() -> i64 {
+    let parent = CUR_PROC;
+    let pml4 = PROCS[parent].pml4;
+    if pml4 == 0 {
+        return -12;
+    }
+    let Some(slot) = (0..NPROCS).find(|&i| !PROCS[i].used) else {
+        return -11; // EAGAIN: process table full
+    };
+    let alloc = match USER_ALLOC.as_mut() {
+        Some(a) => a,
+        None => return -12,
+    };
+    // Enumerate present user pages under the parent CR3 and copy each
+    // 4 KiB frame into a freshly allocated frame.
+    const PTE_PHYS: u64 = 0x000f_ffff_ffff_f000;
+    let mut pages: Vec<(u64, u64)> = Vec::new();
+    let mut copied: Vec<u64> = Vec::new();
+    let mut va = kernel::process::USER_LOAD_BASE;
+    let top = kernel::process::USER_STACK_TOP;
+    while va < top {
+        if let Some((_pte, e)) =
+            kernel::usermem::user_pte(pml4, va, &arch::IdentityPhysMem)
+        {
+            if e & kernel::usermem::P_USER != 0 {
+                let src = e & PTE_PHYS;
+                match alloc.alloc_frame() {
+                    Some(dst) => {
+                        // SAFETY: phys==virt identity map; both frames
+                        // are owned (src by parent, dst just allocated).
+                        core::ptr::copy_nonoverlapping(
+                            src as *const u8,
+                            dst as *mut u8,
+                            4096,
+                        );
+                        pages.push((va, dst));
+                        copied.push(dst);
+                    }
+                    None => {
+                        for f in &copied {
+                            alloc.free_frame(*f);
+                        }
+                        return -12;
+                    }
+                }
+            }
+        }
+        va += 4096;
+    }
+    let tables = match kernel::usermem::build_user_tables(
+        &pages,
+        kernel::process::USER_LOAD_BASE,
+        alloc,
+        &mut arch::IdentityPhysMem,
+    ) {
+        Ok(t) => t,
+        Err(_) => {
+            for f in &copied {
+                alloc.free_frame(*f);
+            }
+            return -12;
+        }
+    };
+    // Child ctx: exact copy of the parent's saved registers, then
+    // private CR3 and rax=0 (fork's child-side return value).
+    CTX[slot].copy_from_slice(&CTX[parent]);
+    CTX[slot][cx::CR3] = tables.cr3;
+    CTX[slot][cx::RAX] = 0;
+    let pid = NEXT_PID;
+    NEXT_PID += 1;
+    PROCS[slot] = ProcSlot {
+        used: true,
+        exited: false,
+        sleeping: false,
+        wait_pid: 0,
+        wait_pipe: 0,
+        wait_pipe_wr: false,
+        reaped: false,
+        pid,
+        parent: parent as i64,
+        exit_code: 0,
+        pml4: tables.cr3,
+        brk: PROCS[parent].brk,
+        frame_count: pages.len() as u16,
+        cwd: PROCS[parent].cwd,
+        cwd_len: PROCS[parent].cwd_len,
+        stdout_fd: PROCS[parent].stdout_fd,
+        stdin_fd: PROCS[parent].stdin_fd,
+        stderr_fd: PROCS[parent].stderr_fd,
+        // Full fd-table inherit like fork(2): pipe ends stay shared.
+        fds: PROCS[parent].fds,
+    };
     pid as i64
 }
 
