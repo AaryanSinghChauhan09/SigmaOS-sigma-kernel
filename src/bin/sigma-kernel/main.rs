@@ -641,6 +641,7 @@ pub extern "C" fn syscall_trap() -> i64 {
         match nr {
             nr::SPAWN => sys_spawn(args[0], args[1], args[2], args[3], args[4], args[5]),
             nr::FORK => sys_fork(),
+            nr::EXEC => sys_exec(args[0], args[1], args[2], args[3], args[4], args[5]),
             nr::WAIT => sys_wait(args[0]),
             nr::EXIT => sys_exit(args[0]),
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
@@ -1068,6 +1069,128 @@ unsafe fn sys_fork() -> i64 {
         fds: PROCS[parent].fds,
     };
     pid as i64
+}
+
+/// EXEC(path, path_len, args_ptr, ...): replace the current process
+/// image — Linux `do_execve`/`setup_new_exec` analogue. Loads the ELF,
+/// builds fresh page tables, materializes segments, installs a new
+/// ctx (rip=entry, fresh stack), then tears down the old address
+/// space. The old CR3 stays active until the final ctx swap, and all
+/// fallible work completes before any frame is freed, so a failed
+/// exec leaves the caller untouched. fds/cwd/pid are preserved.
+/// `args_ptr` uses the same packed descriptor ABI as SPAWN.
+unsafe fn sys_exec(
+    p_ptr: u64,
+    p_len: u64,
+    args_ptr: u64,
+    _argv_len: u64,
+    _envp_ptr: u64,
+    _envp_len: u64,
+) -> i64 {
+    if p_len == 0 || p_len > 64 {
+        return -22;
+    }
+    // SAFETY: user path buffer mapped under the active (current) CR3.
+    let pb = unsafe { core::slice::from_raw_parts(p_ptr as *const u8, p_len as usize) };
+    let path = match core::str::from_utf8(pb) {
+        Ok(s) => s,
+        Err(_) => return -14,
+    };
+    let (mut arg_vecs, env_vecs) = match unsafe { read_spawn_args(args_ptr) } {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let mut argv_strs = alloc::vec::Vec::with_capacity(arg_vecs.len() + 1);
+    argv_strs.push(pb.to_vec());
+    argv_strs.append(&mut arg_vecs);
+    let Some(elf) = (unsafe { sys_vfs() }).read(path) else {
+        return -2; // ENOENT
+    };
+    let alloc = match USER_ALLOC.as_mut() {
+        Some(a) => a,
+        None => return -12,
+    };
+    let img = match kernel::process::load_image(elf, alloc) {
+        Ok(i) => i,
+        Err(e) => {
+            arch::log(alloc::format!("sys_exec: load_image err {:?}\n", e).as_str());
+            return -12;
+        }
+    };
+    let mut pages = Vec::new();
+    for s in &img.segments {
+        for i in 0..s.frames {
+            pages.push((s.vaddr + i * 4096, s.phys + i * 4096));
+        }
+    }
+    let stack_lo = kernel::process::USER_STACK_TOP - img.stack_pages * 4096;
+    for i in 0..img.stack_pages {
+        pages.push((stack_lo + i * 4096, img.stack_phys + i * 4096));
+    }
+    let tables = match kernel::usermem::build_user_tables(
+        &pages,
+        kernel::process::USER_LOAD_BASE,
+        alloc,
+        &mut arch::IdentityPhysMem,
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            arch::log(alloc::format!("sys_exec: tables err {:?}\n", e).as_str());
+            return -12;
+        }
+    };
+    for s in &img.segments {
+        let len = (s.frames * 4096) as usize;
+        // SAFETY: phys is a freshly allocated frame range we own.
+        let dst = unsafe { core::slice::from_raw_parts_mut(s.phys as *mut u8, len) };
+        if kernel::process::materialize_with_offset(elf, s.offset, s.filesz, s.memsz, s.delta, dst)
+            .is_err()
+        {
+            arch::log("sys_exec: materialize err\n");
+            return -12;
+        }
+    }
+    // Zero the user stack — freshly allocated frames are dirty.
+    let st = unsafe {
+        core::slice::from_raw_parts_mut(
+            img.stack_phys as *mut u8,
+            (img.stack_pages * 4096) as usize,
+        )
+    };
+    st.fill(0);
+    let init_rsp = match unsafe { setup_argv(&img, stack_lo, &argv_strs, &env_vecs) } {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    // Everything fallible is done — tear down the OLD address space
+    // now. The old CR3 is still active, but nothing allocates between
+    // here and the ctx swap below, so freed frames can't be recycled
+    // under our feet on this single-CPU kernel.
+    let old_pml4 = PROCS[CUR_PROC].pml4;
+    if old_pml4 != 0 {
+        kernel::usermem::free_user_frames(old_pml4, alloc, &mut arch::IdentityPhysMem);
+        kernel::usermem::free_user_tables(old_pml4, alloc, &mut arch::IdentityPhysMem);
+    }
+    let frame_count =
+        (img.segments.iter().map(|s| s.frames).sum::<u64>() + img.stack_pages) as u16;
+    // Fresh ctx: entry/rsp/rflags/cr3; all other regs zeroed.
+    let c = &mut CTX[CUR_PROC];
+    for v in c.iter_mut() {
+        *v = 0;
+    }
+    c[cx::RIP] = img.entry;
+    c[cx::SP] = init_rsp;
+    c[cx::FL] = 0x202; // IF=1
+    c[cx::CR3] = tables.cr3;
+    // Keep pid/parent/cwd/fds; reset brk and frame accounting.
+    PROCS[CUR_PROC].pml4 = tables.cr3;
+    PROCS[CUR_PROC].brk = 0x10000000;
+    PROCS[CUR_PROC].frame_count = frame_count;
+    // sched_tick syncs pml4/brk through these globals — keep the
+    // running-process invariant USER_* == PROCS[CUR_PROC].*.
+    USER_PML4 = tables.cr3;
+    USER_BRK = PROCS[CUR_PROC].brk;
+    0 // exec "returns" 0 into the NEW image's rax (entry ignores it)
 }
 
 /// WAIT(pid): reap a child's exit status. Blocks until the child exits
