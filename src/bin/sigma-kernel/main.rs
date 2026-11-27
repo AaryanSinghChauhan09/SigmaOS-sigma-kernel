@@ -1193,9 +1193,44 @@ unsafe fn sys_exec(
     0 // exec "returns" 0 into the NEW image's rax (entry ignores it)
 }
 
-/// WAIT(pid): reap a child's exit status. Blocks until the child exits
-/// (Linux `wait` analogue). Returns EAGAIN if no runnable process to switch to.
+/// WAIT(pid): reap a child's exit status. `pid == u64::MAX` waits for
+/// ANY child (POSIX `wait`/`waitpid(-1)` analogue). Blocks until a
+/// matching child exits. Returns EAGAIN if no runnable process to
+/// switch to, ECHILD if there is nothing to wait for.
+const WAIT_ANY: u64 = u64::MAX;
+
 unsafe fn sys_wait(pid: u64) -> i64 {
+    if pid == WAIT_ANY {
+        // Pass 1: reap the first already-exited, unreaped child.
+        for i in 0..NPROCS {
+            if PROCS[i].used
+                && PROCS[i].parent == CUR_PROC as i64
+                && PROCS[i].exited
+                && !PROCS[i].reaped
+            {
+                PROCS[i].reaped = true;
+                let status = PROCS[i].exit_code as i64;
+                reap_process(i);
+                return status;
+            }
+        }
+        // Pass 2: block on the first live child; any child exit wakes us.
+        for i in 0..NPROCS {
+            if PROCS[i].used && PROCS[i].parent == CUR_PROC as i64 && !PROCS[i].exited {
+                let cur = CUR_PROC;
+                match next_runnable(cur) {
+                    Some(j) => {
+                        PROCS[cur].sleeping = true;
+                        PROCS[cur].wait_pid = WAIT_ANY;
+                        switch_to(j);
+                        return 0; // EXIT wrote the status into ctx.rax
+                    }
+                    None => return -11, // EAGAIN
+                }
+            }
+        }
+        return -10; // ECHILD: no children at all
+    }
     for i in 0..NPROCS {
         if PROCS[i].used && PROCS[i].pid == pid {
             if PROCS[i].parent != CUR_PROC as i64 {
@@ -1347,12 +1382,18 @@ unsafe fn sys_exit(code: u64) -> i64 {
         }
     }
     let p = parent as usize;
-    // Wake parent if it's sleeping on this child.
-    if PROCS[p].sleeping && PROCS[p].wait_pid == PROCS[cur].pid {
+    // Wake parent if it's sleeping on this child (or on ANY child).
+    if PROCS[p].sleeping
+        && (PROCS[p].wait_pid == PROCS[cur].pid || PROCS[p].wait_pid == WAIT_ANY)
+    {
         PROCS[p].sleeping = false;
         PROCS[p].wait_pid = 0;
-        PROCS[cur].reaped = true;
         CTX[p][cx::RAX] = code as i64 as u64;
+        // The parent already has the exit status and will never call
+        // wait() for this child again — reclaim its resources now or
+        // the page tables and frames leak. (When the parent was NOT
+        // blocked, the zombie stays until sys_wait reaps it.)
+        reap_process(cur);
     }
     // Switch to next runnable process (prefer parent if it's awake).
     let target = next_runnable(cur).or_else(|| {
