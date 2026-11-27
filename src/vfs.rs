@@ -27,6 +27,8 @@ pub enum FsKind {
     Initramfs,
     /// FAT32 on a block device.
     Fat32,
+    /// Virtual /proc filesystem — content generated at read time.
+    Proc,
     /// Placeholder for future filesystems.
     Other,
 }

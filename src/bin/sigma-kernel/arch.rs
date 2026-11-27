@@ -394,6 +394,7 @@ impl kernel::syscall::KernelServices for TrapSvc {
         let kind = match fstype {
             "initramfs" => kernel::vfs::FsKind::Initramfs,
             "fat32" | "vfat" | "msdos" => kernel::vfs::FsKind::Fat32,
+            "proc" => kernel::vfs::FsKind::Proc,
             _ => kernel::vfs::FsKind::Other,
         };
         match unsafe { crate::sys_vfs_mut() }.mount(target, kind, 0) {
@@ -644,6 +645,70 @@ unsafe fn user_path(ptr: u64, len: u64) -> Result<&'static str, i64> {
     core::str::from_utf8(b).map_err(|_| -14) // EFAULT
 }
 
+/// Generate contents for a /proc virtual file. The nodes exist in
+/// the VFS tree so open/stat/listdir work normally; bytes are
+/// produced fresh per read (Linux procfs semantics).
+fn proc_content(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    let s = match path {
+        "/proc/version" => {
+            alloc::format!("SigmaOS kernel 0.1.0 (x86_64)\n")
+        }
+        "/proc/cpuinfo" => alloc::string::String::from(
+            "processor\t: 0\nvendor_id\t: SigmaOS\nmodel name\t: virtual CPU\n\
+             cpu MHz\t\t: 3000.000\n",
+        ),
+        "/proc/meminfo" => {
+            let (total, free) = match unsafe { crate::USER_ALLOC.as_ref() } {
+                Some(a) => (a.total_frames() * 4096, a.free_frames() * 4096),
+                None => (0, 0),
+            };
+            alloc::format!(
+                "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\n",
+                total / 1024,
+                free / 1024,
+                free / 1024
+            )
+        }
+        "/proc/mounts" => {
+            let mut s = alloc::string::String::new();
+            for m in unsafe { crate::sys_vfs() }.mounts.values() {
+                let k = match m.kind {
+                    kernel::vfs::FsKind::Initramfs => "initramfs",
+                    kernel::vfs::FsKind::Fat32 => "fat32",
+                    kernel::vfs::FsKind::Proc => "proc",
+                    kernel::vfs::FsKind::Other => "other",
+                };
+                s.push_str(&alloc::format!(
+                    "none {} {} rw,relatime 0 0\n",
+                    m.path, k
+                ));
+            }
+            s
+        }
+        "/proc/uptime" => {
+            let up = rdtsc() / 3_000_000_000;
+            alloc::format!("{}.00 {}.00\n", up, up)
+        }
+        "/proc/stat" => {
+            let mut total = 0u64;
+            let mut running = 0u64;
+            for i in 0..crate::NPROCS {
+                // SAFETY: syscall context, single-threaded.
+                let p = unsafe { &crate::PROCS[i] };
+                if p.used {
+                    total += 1;
+                    if !p.exited {
+                        running += 1;
+                    }
+                }
+            }
+            alloc::format!("processes {}\nprocs_running {}\n", total, running)
+        }
+        _ => return None,
+    };
+    Some(alloc::vec::Vec::from(s.into_bytes()))
+}
+
 /// Map a VFS error to an errno-style code.
 fn fs_err(e: kernel::KernelError) -> i64 {
     match e {
@@ -739,6 +804,9 @@ impl TrapSvc {
             Ok(s) => s,
             Err(_) => return -14,
         };
+        if path.starts_with("/proc/") {
+            return -30; // EROFS: procfs is read-only
+        }
         // SAFETY: user buf mapped under active CR3.
         let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
         let n = match unsafe { crate::sys_vfs_mut() }.write_at(path, bytes, off) {
@@ -891,8 +959,23 @@ impl TrapSvc {
             Ok(s) => s,
             Err(_) => return -14,
         };
-        let data = unsafe { crate::sys_vfs() }.read(path);
-        let Some(data) = data else { return -5 }; // EIO
+        // /proc files are generated on the fly; everything else reads
+        // the stored VFS bytes.
+        let proc_buf;
+        let data: &[u8] = if path.starts_with("/proc/") {
+            match proc_content(path) {
+                Some(v) => {
+                    proc_buf = v;
+                    &proc_buf
+                }
+                None => return -2, // ENOENT
+            }
+        } else {
+            match unsafe { crate::sys_vfs() }.read(path) {
+                Some(d) => d,
+                None => return -5, // EIO
+            }
+        };
         let off = f.off as usize;
         if off >= data.len() {
             return 0; // EOF

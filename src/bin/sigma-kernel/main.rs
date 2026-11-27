@@ -179,6 +179,13 @@ fn boot_ok(bi: &kernel::boot::BootInfo) -> ! {
                 con.println("initramfs: parse error");
             }
         }
+        // /proc virtual filesystem: real dir + file nodes; file
+        // contents are generated dynamically at read time.
+        let _ = vfs.create_dir("/proc");
+        for f in ["cpuinfo", "meminfo", "mounts", "stat", "uptime", "version"] {
+            let _ = vfs.create_file(&alloc::format!("/proc/{}", f));
+        }
+        let _ = vfs.mount("/proc", kernel::vfs::FsKind::Proc, 0);
         // publish for the syscall layer
         unsafe { VFS = Some(vfs) };
     } else {
@@ -1363,6 +1370,7 @@ unsafe fn sys_statfs(p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
     let kind_u64 = match kind {
         kernel::vfs::FsKind::Initramfs => 1,
         kernel::vfs::FsKind::Fat32 => 2,
+        kernel::vfs::FsKind::Proc => 4,
         kernel::vfs::FsKind::Other => 3,
     };
     // SAFETY: caller validated b_ptr/b_len; user buf mapped.
@@ -1391,6 +1399,7 @@ unsafe fn sys_mountlist(ptr: u64, len: u64) -> i64 {
             let kind = match m.kind {
                 kernel::vfs::FsKind::Initramfs => 1u64,
                 kernel::vfs::FsKind::Fat32 => 2,
+                kernel::vfs::FsKind::Proc => 4,
                 kernel::vfs::FsKind::Other => 3,
             };
             *(off as *mut u64) = kind;
