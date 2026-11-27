@@ -1,4 +1,4 @@
-//! Agent integration (Omarchy-inspired agent support).
+//! Agent integration for SigmaOS.
 //!
 //! Agent registration, capability tracking, and command dispatch.
 

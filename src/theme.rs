@@ -1,4 +1,4 @@
-//! Theme system (Omarchy-inspired theme support).
+//! Theme system for SigmaOS.
 //!
 //! Color scheme and font configuration with runtime application.
 
