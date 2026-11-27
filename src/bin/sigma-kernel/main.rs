@@ -647,6 +647,7 @@ pub extern "C" fn syscall_trap() -> i64 {
             nr::MEMINFO => sys_meminfo(args[0], args[1]),
             nr::PROCINFO => sys_procinfo(args[0], args[1]),
             nr::DMESG => sys_dmesg(args[0], args[1]),
+            nr::STATFS => sys_statfs(args[0], args[1], args[2], args[3]),
             _ => {
                 let mut svc = arch::TrapSvc;
                 kernel::syscall::dispatch(nr, &args, &mut svc)
@@ -1339,6 +1340,36 @@ unsafe fn sys_dmesg(ptr: u64, len: u64) -> i64 {
     // SAFETY: caller validated ptr/len; user buf mapped under active CR3.
     let buf = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, len as usize) };
     arch::log_read(buf) as i64
+}
+
+/// STATFS(path_ptr, path_len, buf_ptr, buf_len): write {u64 kind,
+/// u64 node_count} for the filesystem mounted at `path` — the
+/// statfs(2)/df analogue. kind: 1=initramfs, 2=fat32, 3=other.
+unsafe fn sys_statfs(p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
+    if p_len == 0 || p_len > 128 || b_ptr == 0 || b_len < 16 {
+        return -22;
+    }
+    // SAFETY: user buffers mapped under the active (current) CR3.
+    let pb = unsafe { core::slice::from_raw_parts(p_ptr as *const u8, p_len as usize) };
+    let path = match core::str::from_utf8(pb) {
+        Ok(s) => s,
+        Err(_) => return -14,
+    };
+    let (kind, nodes) = match (unsafe { sys_vfs() }).statfs(path) {
+        Some((k, n)) => (k, n),
+        None => return -2, // ENOENT: no mount covers the path
+    };
+    let kind_u64 = match kind {
+        kernel::vfs::FsKind::Initramfs => 1,
+        kernel::vfs::FsKind::Fat32 => 2,
+        kernel::vfs::FsKind::Other => 3,
+    };
+    // SAFETY: caller validated b_ptr/b_len; user buf mapped.
+    unsafe {
+        *(b_ptr as *mut u64) = kind_u64;
+        *((b_ptr + 8) as *mut u64) = nodes as u64;
+    }
+    0
 }
 
 /// PROCINFO(ptr, len): write NPROCS records of {pid, flags, exit_code}

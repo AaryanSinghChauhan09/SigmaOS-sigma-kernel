@@ -208,6 +208,26 @@ impl Vfs {
         Ok(())
     }
 
+    /// Filesystem stats for `path`: (kind, node_count) of the mount
+    /// covering it — longest mount-point prefix wins ("/" covers all).
+    pub fn statfs(&self, path: &str) -> Option<(FsKind, usize)> {
+        let p = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut best: Option<&MountEntry> = None;
+        for m in self.mounts.values() {
+            let covers = m.path == "/"
+                || p == m.path
+                || p.starts_with(&format!("{}/", m.path.trim_end_matches('/')));
+            if covers && best.is_none_or(|b| m.path.len() > b.path.len()) {
+                best = Some(m);
+            }
+        }
+        best.map(|m| (m.kind, self.nodes.len()))
+    }
+
     /// Look up a node by absolute or relative path.
     pub fn lookup(&self, path: &str) -> Option<usize> {
         let trimmed = path.trim_start_matches('/');
