@@ -43,7 +43,8 @@ pub mod nr {
     pub const GETCWD: u64 = 35;
     pub const DMESG: u64 = 36;
     pub const STATFS: u64 = 37;
-    pub const MAX: u64 = 38;
+    pub const MOUNTLIST: u64 = 38;
+    pub const MAX: u64 = 39;
 }
 
 /// Syscall argument registers in order.
@@ -61,7 +62,7 @@ pub fn arity(nr: u64) -> usize {
         | nr::TIME
         | nr::FORK
         | nr::KILL => 0,
-        nr::RAND | nr::KERNEL_INFO | nr::MEMINFO | nr::PROCINFO | nr::DMESG => 2,
+        nr::RAND | nr::KERNEL_INFO | nr::MEMINFO | nr::PROCINFO | nr::DMESG | nr::MOUNTLIST => 2,
         nr::IOCTL => 3,
         nr::MMAP | nr::MUNMAP | nr::BRK => 3,
         nr::FB_INFO => 1,
@@ -70,7 +71,8 @@ pub fn arity(nr: u64) -> usize {
         nr::EXEC => 3,
         nr::DUP => 1,
         nr::DUP2 => 2,
-        nr::MOUNT | nr::UMOUNT => 3,
+        nr::MOUNT => 6,
+        nr::UMOUNT => 2,
         nr::MKDIR | nr::UNLINK | nr::RMDIR | nr::CHDIR | nr::GETCWD => 2,
         _ => 0,
     }

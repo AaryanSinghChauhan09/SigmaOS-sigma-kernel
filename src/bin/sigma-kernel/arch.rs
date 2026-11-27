@@ -372,17 +372,44 @@ impl kernel::syscall::KernelServices for TrapSvc {
     }
     fn mount(
         &mut self,
-        _source: u64,
-        _source_len: u64,
-        _target: u64,
-        _target_len: u64,
-        _fstype: u64,
-        _fstype_len: u64,
+        source: u64,
+        source_len: u64,
+        target: u64,
+        target_len: u64,
+        fstype: u64,
+        fstype_len: u64,
     ) -> i64 {
-        -38 // ENOSYS - requires VFS mount support
+        let _src = match unsafe { user_path(source, source_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let target = match unsafe { user_path(target, target_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let fstype = match unsafe { user_path(fstype, fstype_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let kind = match fstype {
+            "initramfs" => kernel::vfs::FsKind::Initramfs,
+            "fat32" | "vfat" | "msdos" => kernel::vfs::FsKind::Fat32,
+            _ => kernel::vfs::FsKind::Other,
+        };
+        match unsafe { crate::sys_vfs_mut() }.mount(target, kind, 0) {
+            Ok(()) => 0,
+            Err(e) => fs_err(e),
+        }
     }
-    fn umount(&mut self, _target: u64, _target_len: u64) -> i64 {
-        -38 // ENOSYS - requires VFS mount support
+    fn umount(&mut self, target: u64, target_len: u64) -> i64 {
+        let target = match unsafe { user_path(target, target_len) } {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        match unsafe { crate::sys_vfs_mut() }.umount(target) {
+            Ok(()) => 0,
+            Err(e) => fs_err(e),
+        }
     }
     fn mkdir(&mut self, p_ptr: u64, p_len: u64) -> i64 {
         self.sys_mkdir(p_ptr, p_len)
@@ -625,6 +652,9 @@ fn fs_err(e: kernel::KernelError) -> i64 {
         kernel::KernelError::Fs(m) if m.contains("not empty") => -39, // ENOTEMPTY
         kernel::KernelError::Fs(m) if m.contains("not a directory") => -20, // ENOTDIR
         kernel::KernelError::Fs(m) if m.contains("is a directory") => -21, // EISDIR
+        kernel::KernelError::Fs(m) if m.contains("already mounted") => -16, // EBUSY
+        kernel::KernelError::Fs(m) if m.contains("not mounted") => -22, // EINVAL
+        kernel::KernelError::Fs(m) if m.contains("mount point") => -2, // ENOENT
         _ => -5,                                                   // EIO
     }
 }

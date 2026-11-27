@@ -648,6 +648,7 @@ pub extern "C" fn syscall_trap() -> i64 {
             nr::PROCINFO => sys_procinfo(args[0], args[1]),
             nr::DMESG => sys_dmesg(args[0], args[1]),
             nr::STATFS => sys_statfs(args[0], args[1], args[2], args[3]),
+            nr::MOUNTLIST => sys_mountlist(args[0], args[1]),
             _ => {
                 let mut svc = arch::TrapSvc;
                 kernel::syscall::dispatch(nr, &args, &mut svc)
@@ -1368,6 +1369,38 @@ unsafe fn sys_statfs(p_ptr: u64, p_len: u64, b_ptr: u64, b_len: u64) -> i64 {
     unsafe {
         *(b_ptr as *mut u64) = kind_u64;
         *((b_ptr + 8) as *mut u64) = nodes as u64;
+    }
+    0
+}
+
+/// MOUNTLIST(ptr, len): write mount records for `mount` listing.
+/// Layout: u64 count, then per mount {u64 kind, u64 dev, u8 path[64]}
+/// (80 bytes each, NUL-padded path). kind: 1=initramfs, 2=fat32, 3=other.
+unsafe fn sys_mountlist(ptr: u64, len: u64) -> i64 {
+    const REC: usize = 80;
+    let mounts = unsafe { sys_vfs() }.mounts.values().collect::<alloc::vec::Vec<_>>();
+    let need = 8 + mounts.len() * REC;
+    if ptr == 0 || (len as usize) < need {
+        return -22;
+    }
+    // SAFETY: caller validated ptr/len; user buf mapped under current CR3.
+    unsafe {
+        *(ptr as *mut u64) = mounts.len() as u64;
+        let mut off = ptr + 8;
+        for m in mounts {
+            let kind = match m.kind {
+                kernel::vfs::FsKind::Initramfs => 1u64,
+                kernel::vfs::FsKind::Fat32 => 2,
+                kernel::vfs::FsKind::Other => 3,
+            };
+            *(off as *mut u64) = kind;
+            *((off + 8) as *mut u64) = m.dev as u64;
+            let pb = core::slice::from_raw_parts_mut((off + 16) as *mut u8, 64);
+            pb.fill(0);
+            let n = m.path.len().min(63);
+            pb[..n].copy_from_slice(&m.path.as_bytes()[..n]);
+            off += REC as u64;
+        }
     }
     0
 }
