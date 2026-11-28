@@ -10,7 +10,7 @@ SigmaOS sigma-kernel - modular Rust crate for the SigmaOS system
 
 ```sh
 cargo build
-cargo test
+cargo test --offline --lib   # no_std crate: use --lib, not the bin target
 ```
 
 Part of the SigmaOS multi-repository component ecosystem.
